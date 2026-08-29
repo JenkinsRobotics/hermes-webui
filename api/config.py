@@ -5498,7 +5498,11 @@ def _minimal_static_models_catalog() -> dict:
         if isinstance(model_cfg, dict):
             active_provider = model_cfg.get("provider")
             cfg_base_url = model_cfg.get("base_url", "") or ""
-        if active_provider:
+        ollama_aggregate_base_url = _configured_ollama_aggregate_base_url(cfg)
+        default_model = get_effective_default_model(cfg)
+        if ollama_aggregate_base_url:
+            active_provider = _ollama_aggregate_provider_for_model(default_model, {})
+        elif active_provider:
             try:
                 active_provider = _resolve_configured_provider_id(
                     active_provider, cfg, base_url=cfg_base_url
@@ -5518,7 +5522,6 @@ def _minimal_static_models_catalog() -> dict:
                     )
             except Exception:
                 pass
-        default_model = get_effective_default_model(cfg)
         groups: list[dict] = []
         if default_model:
             try:
@@ -5527,7 +5530,7 @@ def _minimal_static_models_catalog() -> dict:
                 label = default_model
             groups.append(
                 {
-                    "provider": "Default",
+                    "provider": _PROVIDER_DISPLAY.get(active_provider, "Default"),
                     "provider_id": active_provider or "default",
                     "models": [{"id": default_model, "label": label}],
                 }
@@ -5561,7 +5564,11 @@ def _static_models_catalog_without_live_probes() -> dict:
         if isinstance(model_cfg, dict):
             active_provider = model_cfg.get("provider")
             cfg_base_url = model_cfg.get("base_url", "") or ""
-        if active_provider:
+        ollama_aggregate_base_url = _configured_ollama_aggregate_base_url(cfg)
+        default_model = get_effective_default_model(cfg)
+        if ollama_aggregate_base_url:
+            active_provider = _ollama_aggregate_provider_for_model(default_model, {})
+        elif active_provider:
             try:
                 active_provider = _resolve_configured_provider_id(
                     active_provider,
@@ -5588,7 +5595,6 @@ def _static_models_catalog_without_live_probes() -> dict:
         except Exception:
             logger.debug("Failed to load auth store for static models catalog", exc_info=True)
 
-        default_model = get_effective_default_model(cfg)
         detected_providers: set[str] = set()
         configured_model_ids: dict[str, list[str]] = {}
         named_custom_groups: dict[str, dict[str, object]] = {}
@@ -5772,9 +5778,16 @@ def _static_models_catalog_without_live_probes() -> dict:
             raw_key = canonical_to_raw_provider_key.get(pid, pid)
             provider_cfg = _get_provider_cfg(raw_key)
             raw_models = []
-            if isinstance(provider_cfg, dict) and "models" in provider_cfg:
+            if ollama_aggregate_base_url and pid in {"ollama-cloud", "ollama-local"}:
+                raw_models = [
+                    {"id": model_id, "label": _format_ollama_label(model_id)}
+                    for model_id in configured_model_ids.get(pid, [])
+                ]
+            elif isinstance(provider_cfg, dict) and "models" in provider_cfg:
                 raw_models = _configured_model_options(provider_cfg["models"])
-            if not raw_models:
+            if not raw_models and not (
+                ollama_aggregate_base_url and pid in {"ollama-cloud", "ollama-local"}
+            ):
                 raw_models = copy.deepcopy(_PROVIDER_MODELS.get(pid, []))
             # Plugin-only providers (e.g. 9router) are not in _PROVIDER_MODELS
             # and rarely ship a `models:` allowlist in providers.<slug>, so

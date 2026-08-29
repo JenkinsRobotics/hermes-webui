@@ -124,6 +124,20 @@ def test_picker_splits_one_ollama_endpoint_into_cloud_and_local(
     assert result["configured_model_badges"]["glm-5.2:cloud"]["provider"] == "ollama-cloud"
 
 
+def test_cold_fallback_never_exposes_ollama_as_custom(tmp_path, monkeypatch):
+    _write_config(tmp_path, monkeypatch)
+
+    for result in (
+        config._minimal_static_models_catalog(),
+        config._static_models_catalog_without_live_probes(),
+    ):
+        assert result["active_provider"] == "ollama-cloud"
+        assert result["groups"]
+        assert {group["provider_id"] for group in result["groups"]} == {"ollama-cloud"}
+        assert result["groups"][0]["provider"] == "Ollama Cloud"
+        assert result["groups"][0]["models"][0]["id"] == "glm-5.2:cloud"
+
+
 @pytest.mark.parametrize("lane", ["ollama-cloud", "ollama-local"])
 def test_both_picker_lanes_route_through_the_same_mac_ollama_endpoint(
     tmp_path,
