@@ -14462,6 +14462,9 @@ def handle_get(handler, parsed) -> bool:
     # aggregates per visible profile home so the UI can surface hidden-row
     # counts and, when opted in, read-only foreign rows.
     if parsed.path == "/api/crons":
+        forwarded = _runner_schedule_forward(handler, "list", query=parsed.query)
+        if forwarded is not None:
+            return forwarded
         # #4768: in split-container / minimal Docker deployments the WebUI image may
         # not ship the agent's `cron` package on its import path. Degrade gracefully
         # (empty list + cron_unavailable flag) instead of 500ing the whole Task tab.
@@ -14494,6 +14497,9 @@ def handle_get(handler, parsed) -> bool:
             return _handle_cron_output(handler, parsed)
 
     if parsed.path == "/api/crons/history":
+        forwarded = _runner_schedule_forward(handler, "history", query=parsed.query)
+        if forwarded is not None:
+            return forwarded
         from api.profiles import cron_profile_context
 
         with cron_profile_context():
@@ -14501,6 +14507,9 @@ def handle_get(handler, parsed) -> bool:
             return _handle_cron_history(handler, parsed)
 
     if parsed.path == "/api/crons/run":
+        forwarded = _runner_schedule_forward(handler, "run-detail", query=parsed.query)
+        if forwarded is not None:
+            return forwarded
         from api.profiles import cron_profile_context
 
         with cron_profile_context():
@@ -14508,6 +14517,9 @@ def handle_get(handler, parsed) -> bool:
             return _handle_cron_run_detail(handler, parsed)
 
     if parsed.path == "/api/crons/recent":
+        forwarded = _runner_schedule_forward(handler, "recent", query=parsed.query)
+        if forwarded is not None:
+            return forwarded
         from api.profiles import cron_profile_context
 
         with cron_profile_context():
@@ -14515,12 +14527,18 @@ def handle_get(handler, parsed) -> bool:
             return _handle_cron_recent(handler, parsed)
 
     if parsed.path == "/api/crons/status":
+        forwarded = _runner_schedule_forward(handler, "job-status", query=parsed.query)
+        if forwarded is not None:
+            return forwarded
         from api.profiles import cron_profile_context
 
         with cron_profile_context():
             return _handle_cron_status(handler, parsed)
 
     if parsed.path == "/api/crons/delivery-options":
+        forwarded = _runner_schedule_forward(handler, "delivery-options")
+        if forwarded is not None:
+            return forwarded
         from api.profiles import cron_profile_context
 
         with cron_profile_context():
@@ -14657,7 +14675,17 @@ def handle_get(handler, parsed) -> bool:
             },
         )
 
-    # ── Gateway Status (GET) ──
+    # ── Gateway / runtime scheduler status (GET) ──
+    if parsed.path == "/api/runtime/scheduler/status":
+        forwarded = _runner_schedule_forward(handler, "status")
+        if forwarded is not None:
+            return forwarded
+        return j(handler, {
+            **_gateway_status_payload(),
+            "owner": "hermes",
+            "scheduler": "hermes",
+        })
+
     if parsed.path == "/api/gateway/status":
         return j(handler, _gateway_status_payload())
 
@@ -16406,6 +16434,9 @@ def handle_post(handler, parsed) -> bool:
     # See GET-side comment above: wrap in cron_profile_context so writes go
     # to the TLS-active profile's jobs.json instead of the process default.
     if parsed.path == "/api/crons/create":
+        forwarded = _runner_schedule_forward(handler, "create", body=body)
+        if forwarded is not None:
+            return forwarded
         from api.profiles import cron_profile_context
 
         with cron_profile_context():
@@ -16413,6 +16444,9 @@ def handle_post(handler, parsed) -> bool:
             return _handle_cron_create(handler, body)
 
     if parsed.path == "/api/crons/update":
+        forwarded = _runner_schedule_forward(handler, "update", body=body)
+        if forwarded is not None:
+            return forwarded
         from api.profiles import cron_profile_context
 
         with cron_profile_context():
@@ -16420,6 +16454,9 @@ def handle_post(handler, parsed) -> bool:
             return _handle_cron_update(handler, body)
 
     if parsed.path == "/api/crons/delete":
+        forwarded = _runner_schedule_forward(handler, "delete", body=body)
+        if forwarded is not None:
+            return forwarded
         from api.profiles import cron_profile_context
 
         with cron_profile_context():
@@ -16427,6 +16464,9 @@ def handle_post(handler, parsed) -> bool:
             return _handle_cron_delete(handler, body)
 
     if parsed.path == "/api/crons/run":
+        forwarded = _runner_schedule_forward(handler, "run", body=body)
+        if forwarded is not None:
+            return forwarded
         from api.profiles import cron_profile_context
 
         with cron_profile_context():
@@ -16434,6 +16474,9 @@ def handle_post(handler, parsed) -> bool:
             return _handle_cron_run(handler, body)
 
     if parsed.path == "/api/crons/pause":
+        forwarded = _runner_schedule_forward(handler, "pause", body=body)
+        if forwarded is not None:
+            return forwarded
         from api.profiles import cron_profile_context
 
         with cron_profile_context():
@@ -16441,6 +16484,9 @@ def handle_post(handler, parsed) -> bool:
             return _handle_cron_pause(handler, body)
 
     if parsed.path == "/api/crons/resume":
+        forwarded = _runner_schedule_forward(handler, "resume", body=body)
+        if forwarded is not None:
+            return forwarded
         from api.profiles import cron_profile_context
 
         with cron_profile_context():
@@ -23257,6 +23303,53 @@ def _runtime_runner_client_factory():
     from api.runner_client import HttpRunnerClient
 
     return HttpRunnerClient.from_env()
+
+
+def _runner_schedule_forward(handler, operation: str, *, query: str = "", body=None):
+    """Forward a scheduler request when ``runner-local`` owns execution.
+
+    ``None`` means the legacy Hermes scheduler remains authoritative. A
+    configured runner failure is returned as a bounded 503; it must never fall
+    through and mutate Hermes cron state when Jaeger is selected.
+    """
+    from api.runtime_adapter import runtime_adapter_runner_enabled
+
+    if not runtime_adapter_runner_enabled():
+        return None
+    try:
+        client = _runtime_runner_client_factory()
+        if operation == "status":
+            payload = client.scheduler_status()
+        elif operation == "list":
+            payload = client.list_schedules(query)
+        elif operation == "job-status":
+            payload = client.schedule_status(query)
+        elif operation == "history":
+            payload = client.schedule_history(query)
+        elif operation == "run-detail":
+            payload = client.schedule_run_detail(query)
+        elif operation == "delivery-options":
+            payload = client.schedule_delivery_options()
+        elif operation == "recent":
+            payload = client.schedule_recent(query)
+        elif operation == "create":
+            payload = client.create_schedule(dict(body or {}))
+        elif operation in {"update", "delete", "run", "pause", "resume"}:
+            payload = client.mutate_schedule(operation, dict(body or {}))
+        else:
+            raise ValueError(f"unsupported runner schedule operation: {operation}")
+        return j(handler, payload)
+    except Exception as exc:
+        from api.runner_client import RunnerClientError
+
+        if not isinstance(exc, (RunnerClientError, NotImplementedError, ValueError)):
+            raise
+        logger.warning("runner-local scheduler request failed: %s", exc)
+        return j(
+            handler,
+            {"error": f"Jaeger scheduler unavailable: {_sanitize_error(exc)}"},
+            status=503,
+        )
 
 
 def _chat_start_response_from_run_start(result):

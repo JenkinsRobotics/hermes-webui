@@ -1017,7 +1017,7 @@ async function loadCronGatewayNotice() {
   const box = $('cronGatewayNotice');
   if (!box) return;
   try {
-    const status = await api('/api/gateway/status');
+    const status = await api('/api/runtime/scheduler/status');
     const html = _cronGatewayNoticeHtml(status);
     if (html) {
       box.innerHTML = html;

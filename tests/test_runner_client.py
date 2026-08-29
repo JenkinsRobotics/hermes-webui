@@ -118,6 +118,45 @@ def test_runner_client_maps_observe_status_and_controls(monkeypatch):
     ]
 
 
+def test_runner_client_maps_scheduler_compatibility_calls(monkeypatch):
+    calls = []
+
+    def fake_urlopen(req, timeout=0):
+        calls.append((
+            req.get_method(),
+            req.full_url,
+            json.loads(req.data.decode("utf-8")) if req.data else None,
+        ))
+        return FakeResponse({"ok": True})
+
+    _patch_opener(monkeypatch, fake_urlopen)
+    client = HttpRunnerClient(base_url="http://runner.local")
+
+    client.scheduler_status()
+    client.list_schedules("?all_profiles=1")
+    client.schedule_status("?job_id=morning")
+    client.schedule_history("?job_id=morning&limit=50")
+    client.schedule_run_detail("?job_id=morning&filename=run.md")
+    client.schedule_delivery_options()
+    client.schedule_recent("?since=1")
+    client.create_schedule({"name": "morning"})
+    client.mutate_schedule("pause", {"job_id": "morning"})
+    client.schedule_action("morning/day", "pause")
+
+    assert calls == [
+        ("GET", "http://runner.local/v1/scheduler/status", None),
+        ("GET", "http://runner.local/v1/schedules?all_profiles=1", None),
+        ("GET", "http://runner.local/v1/schedules/status?job_id=morning", None),
+        ("GET", "http://runner.local/v1/schedules/history?job_id=morning&limit=50", None),
+        ("GET", "http://runner.local/v1/schedules/run?job_id=morning&filename=run.md", None),
+        ("GET", "http://runner.local/v1/schedules/delivery-options", None),
+        ("GET", "http://runner.local/v1/schedules/recent?since=1", None),
+        ("POST", "http://runner.local/v1/schedules/create", {"name": "morning"}),
+        ("POST", "http://runner.local/v1/schedules/pause", {"job_id": "morning"}),
+        ("POST", "http://runner.local/v1/schedules/morning%2Fday/pause", {}),
+    ]
+
+
 def test_runner_client_rejects_non_object_json(monkeypatch):
     class ArrayResponse(FakeResponse):
         def read(self):

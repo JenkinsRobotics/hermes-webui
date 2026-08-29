@@ -103,6 +103,52 @@ class HttpRunnerClient:
             {"action": action, "text": text},
         )
 
+    def scheduler_status(self) -> dict[str, Any]:
+        return self._get("/v1/scheduler/status")
+
+    def list_schedules(self, query: str = "") -> dict[str, Any]:
+        return self._get(self._query_path("/v1/schedules", query))
+
+    def schedule_status(self, query: str = "") -> dict[str, Any]:
+        return self._get(self._query_path("/v1/schedules/status", query))
+
+    def schedule_history(self, query: str = "") -> dict[str, Any]:
+        return self._get(self._query_path("/v1/schedules/history", query))
+
+    def schedule_run_detail(self, query: str = "") -> dict[str, Any]:
+        return self._get(self._query_path("/v1/schedules/run", query))
+
+    def schedule_delivery_options(self) -> dict[str, Any]:
+        return self._get("/v1/schedules/delivery-options")
+
+    def schedule_recent(self, query: str = "") -> dict[str, Any]:
+        return self._get(self._query_path("/v1/schedules/recent", query))
+
+    def create_schedule(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._post("/v1/schedules/create", dict(payload or {}))
+
+    def mutate_schedule(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if action not in {"update", "delete", "run", "pause", "resume"}:
+            raise ValueError(f"unsupported schedule mutation: {action}")
+        return self._post(f"/v1/schedules/{action}", dict(payload or {}))
+
+    def schedule_action(
+        self,
+        job_id: str,
+        action: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if action not in {"pause", "resume", "cancel", "run"}:
+            raise ValueError(f"unsupported schedule action: {action}")
+        encoded_id = urllib.parse.quote(str(job_id), safe="")
+        return self._post(f"/v1/schedules/{encoded_id}/{action}", dict(payload or {}))
+
+    @staticmethod
+    def _query_path(path: str, query: str) -> str:
+        values = urllib.parse.parse_qsl(str(query or "").lstrip("?"), keep_blank_values=True)
+        encoded = urllib.parse.urlencode(values)
+        return path + (f"?{encoded}" if encoded else "")
+
     def _headers(self) -> dict[str, str]:
         headers = {
             "Accept": "application/json",
