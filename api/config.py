@@ -1189,7 +1189,8 @@ _PROVIDER_DISPLAY = {
     "meta-llama": "Meta Llama",
     "huggingface": "HuggingFace",
     "alibaba": "Alibaba",
-    "ollama": "Ollama",
+    "ollama": "Ollama Local",
+    "ollama-local": "Ollama Local",
     "ollama-cloud": "Ollama Cloud",
     "opencode-zen": "OpenCode Zen",
     "opencode-go": "OpenCode Go",
@@ -2611,6 +2612,102 @@ def _get_providers_cfg() -> dict:
     return providers_cfg if isinstance(providers_cfg, dict) else {}
 
 
+_OLLAMA_AGGREGATE_PROVIDER_IDS = frozenset({"ollama", "ollama-local", "ollama-cloud"})
+
+
+def _configured_ollama_aggregate_base_url(config_obj: dict | None = None) -> str:
+    """Return the Mac Ollama URL when it is the configured aggregate endpoint.
+
+    Ollama's local daemon can expose both downloaded models and authenticated
+    cloud-proxy tags through one OpenAI-compatible URL.  Hermes Agent calls the
+    local transport ``custom`` internally, but that implementation detail must
+    not collapse the WebUI picker into a misleading Custom group.
+    """
+    source = config_obj if isinstance(config_obj, dict) else cfg
+    model_cfg = source.get("model", {}) if isinstance(source, dict) else {}
+    if not isinstance(model_cfg, dict):
+        return ""
+    provider = str(model_cfg.get("provider") or "").strip().lower()
+    base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+    if provider not in _OLLAMA_AGGREGATE_PROVIDER_IDS or not base_url:
+        return ""
+    if not _base_url_points_at_local_server(base_url):
+        return ""
+    return base_url
+
+
+def _ollama_native_tags_url(base_url: str) -> str:
+    parsed = urlparse(str(base_url or "").strip())
+    path = parsed.path.rstrip("/")
+    if path.endswith("/v1"):
+        path = path[:-3]
+    path = path.rstrip("/") + "/api/tags"
+    return parsed._replace(path=path, params="", query="", fragment="").geturl()
+
+
+def _read_ollama_aggregate_models(base_url: str) -> dict[str, list[dict]]:
+    """Read and split an Ollama daemon's native tag catalog.
+
+    ``remote_host`` is Ollama's authoritative distinction between a downloaded
+    model and a cloud proxy.  Embedding-only tags are intentionally omitted from
+    this chat-model picker.
+    """
+    result: dict[str, list[dict]] = {"ollama-cloud": [], "ollama-local": []}
+    if not base_url:
+        return result
+    try:
+        request = urllib.request.Request(
+            _ollama_native_tags_url(base_url),
+            method="GET",
+            headers={"Accept": "application/json", "User-Agent": "Hermes-WebUI"},
+        )
+        with urllib.request.urlopen(  # nosec B310 -- operator-configured local Ollama URL
+            request,
+            timeout=CUSTOM_MODELS_ENDPOINT_TIMEOUT_SECONDS,
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        logger.debug("Ollama native /api/tags discovery failed for %s", base_url, exc_info=True)
+        return result
+
+    seen: dict[str, set[str]] = {"ollama-cloud": set(), "ollama-local": set()}
+    rows = payload.get("models", []) if isinstance(payload, dict) else []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        model_id = str(row.get("name") or row.get("model") or "").strip()
+        if not model_id:
+            continue
+        capabilities = row.get("capabilities")
+        if isinstance(capabilities, list) and capabilities and "completion" not in capabilities:
+            continue
+        remote_host = str(row.get("remote_host") or "").strip()
+        remote_hostname = ""
+        if remote_host:
+            remote_hostname = (urlparse(remote_host).hostname or "").lower()
+        provider_id = (
+            "ollama-cloud"
+            if remote_hostname == "ollama.com" or remote_hostname.endswith(".ollama.com")
+            else "ollama-local"
+        )
+        if model_id in seen[provider_id]:
+            continue
+        seen[provider_id].add(model_id)
+        result[provider_id].append({"id": model_id, "label": _format_ollama_label(model_id)})
+    return result
+
+
+def _ollama_aggregate_provider_for_model(
+    model_id: object,
+    models_by_provider: dict[str, list[dict]],
+) -> str:
+    target = _strip_picker_provider_hint(str(model_id or "").strip())
+    for provider_id in ("ollama-cloud", "ollama-local"):
+        if any(str(row.get("id") or "") == target for row in models_by_provider.get(provider_id, [])):
+            return provider_id
+    return "ollama-cloud" if target.endswith(":cloud") else "ollama-local"
+
+
 def _get_provider_cfg(provider_id) -> dict:
     provider_cfg = _get_providers_cfg().get(provider_id, {})
     return provider_cfg if isinstance(provider_cfg, dict) else {}
@@ -2737,6 +2834,15 @@ def resolve_model_provider(model_id: str, *, explicitly_picked: bool = False) ->
             base_url=config_base_url,
             resolve_alias=False,
         )
+
+    ollama_aggregate_base_url = _configured_ollama_aggregate_base_url(cfg)
+    if ollama_aggregate_base_url:
+        # Both picker lanes use the same Mac Ollama daemon.  Keep the lane in
+        # session/UI state, but hand the agent its established local transport
+        # id and endpoint so an Ollama Cloud proxy tag is not sent directly to
+        # ollama.com with a second credential path.
+        config_provider = "ollama"
+        config_base_url = ollama_aggregate_base_url
 
     # Heal legacy ``provider: local`` entries (written by WebUI < v0.50.252)
     # at read time. ``local`` is not a registered provider, so passing it
@@ -2956,6 +3062,11 @@ def resolve_model_provider(model_id: str, *, explicitly_picked: bool = False) ->
     parsed_provider_hint = _parse_provider_qualified_model_id(model_id)
     if parsed_provider_hint is not None:
         bare_model, provider_hint = parsed_provider_hint
+        if (
+            ollama_aggregate_base_url
+            and provider_hint in {"ollama-local", "ollama-cloud"}
+        ):
+            return _finalize(bare_model, "ollama", ollama_aggregate_base_url)
         # Session/send/handoff shapes encode the provider as @custom:<slug>:model
         # and reach here after the ownership scan only saw the ENCODED string.
         # _finalize() applies the all-entry uniqueness check before returning the
@@ -6940,11 +7051,23 @@ def get_available_models(*, prefer_cache: bool = False, force_refresh: bool = Fa
             if cfg_default:
                 default_model = cfg_default
 
+        ollama_aggregate_base_url = _configured_ollama_aggregate_base_url(cfg)
+        ollama_aggregate_models = (
+            _read_ollama_aggregate_models(ollama_aggregate_base_url)
+            if ollama_aggregate_base_url
+            else {"ollama-cloud": [], "ollama-local": []}
+        )
+
         # Normalize active_provider to its canonical key.  Named custom
         # providers are first-class provider ids in WebUI routing; accept the
         # user-facing name from config.yaml (``provider: ollama-local``) and
         # route it through the same ``custom:<name>`` slug the picker emits.
-        if active_provider:
+        if ollama_aggregate_base_url:
+            active_provider = _ollama_aggregate_provider_for_model(
+                default_model,
+                ollama_aggregate_models,
+            )
+        elif active_provider:
             active_provider = _resolve_configured_provider_id(
                 active_provider,
                 cfg,
@@ -6972,6 +7095,12 @@ def get_available_models(*, prefer_cache: bool = False, force_refresh: bool = Fa
         detected_providers = set()
         if active_provider:
             detected_providers.add(active_provider)
+        if ollama_aggregate_base_url:
+            detected_providers.update(
+                provider_id
+                for provider_id, models in ollama_aggregate_models.items()
+                if models
+            )
 
         try:
             _pool = auth_store.get("credential_pool", {}) if isinstance(auth_store, dict) else {}
@@ -7499,6 +7628,13 @@ def get_available_models(*, prefer_cache: bool = False, force_refresh: bool = Fa
                 auto_detected_models_by_provider.setdefault(provider_key, []).append(auto_model)
                 detected_providers.add(provider_key)
 
+        if ollama_aggregate_base_url:
+            for provider_id, models in ollama_aggregate_models.items():
+                if not models:
+                    continue
+                auto_detected_models_by_provider[provider_id] = copy.deepcopy(models)
+                detected_providers.add(provider_id)
+
         _custom_providers_cfg = cfg.get("custom_providers", [])
         _named_custom_groups: dict = {}
         _named_custom_errors: dict[str, dict] = {}
@@ -7640,6 +7776,8 @@ def get_available_models(*, prefer_cache: bool = False, force_refresh: bool = Fa
             configured_providers = set()
             if active_provider:
                 configured_providers.add(active_provider)
+            if ollama_aggregate_base_url:
+                configured_providers.update({"ollama-cloud", "ollama-local"})
             cfg_providers = cfg.get("providers", {})
             if isinstance(cfg_providers, dict):
                 # Canonicalise here too — same rationale as #1568 detection
@@ -7766,7 +7904,13 @@ def get_available_models(*, prefer_cache: bool = False, force_refresh: bool = Fa
                             )
                     continue
                 provider_name = _effective_provider_display_name(pid, _PROVIDER_DISPLAY)
-                if pid == "openrouter":
+                if ollama_aggregate_base_url and pid in {"ollama-cloud", "ollama-local"}:
+                    raw_models = copy.deepcopy(
+                        auto_detected_models_by_provider.get(pid, [])
+                    )
+                    if raw_models:
+                        _append_picker_group(provider_name, pid, raw_models)
+                elif pid == "openrouter":
                     # OpenRouter has two model surfaces:
                     #   (1) curated tool-supporting catalog via hermes_cli.models.fetch_openrouter_models()
                     #       — the canonical agent-ready list, applies a tool-support filter

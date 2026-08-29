@@ -21381,6 +21381,26 @@ def _handle_live_models(handler, parsed):
         if not provider:
             return j(handler, {"error": "no_provider", "models": []})
 
+        from api.config import (
+            _configured_ollama_aggregate_base_url,
+            _read_ollama_aggregate_models,
+        )
+
+        ollama_aggregate_base_url = _configured_ollama_aggregate_base_url(cfg)
+        if (
+            ollama_aggregate_base_url
+            and provider in {"ollama-local", "ollama-cloud"}
+        ):
+            cache_key = _live_models_cache_key(provider)
+            cached = _get_cached_live_models(cache_key)
+            if cached is not None:
+                return j(handler, cached)
+            groups = _read_ollama_aggregate_models(ollama_aggregate_base_url)
+            models = groups.get(provider, [])
+            payload = {"provider": provider, "models": models, "count": len(models)}
+            _set_cached_live_models(cache_key, payload)
+            return j(handler, payload)
+
         # Normalize provider alias so 'z.ai' -> 'zai', 'x.ai' -> 'xai', etc.
         # The browser sends whatever active_provider the static endpoint returned;
         # without normalization, provider_model_ids() misses the alias and returns [].
