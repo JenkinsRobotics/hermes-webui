@@ -6485,6 +6485,25 @@ async function switchToWorkspace(path,name){
 }
 
 // ── Profile panel + dropdown ──
+
+function _friendlyProfileLabel(pOrName){
+  const FALLBACK = {default:'Hermes Agent', jaeger:'Jaeger', openclaw:'OpenClaw', roundtable:'Roundtable'};
+  try{
+    if(pOrName && typeof pOrName === 'object'){
+      const dn = pOrName.display_name;
+      if(typeof dn === 'string' && dn.trim()) return dn.trim();
+      const n = pOrName.name;
+      if(typeof n === 'string' && n.trim()) return FALLBACK[n.trim()] || n.trim();
+      return 'Profile';
+    }
+    if(typeof pOrName === 'string' && pOrName.trim()){
+      const n = pOrName.trim();
+      return FALLBACK[n] || (n.charAt(0).toUpperCase() + n.slice(1));
+    }
+  }catch(_){}
+  return 'Hermes Agent';
+}
+
 let _profilesCache = null;
 let _profileDropdownFetchPromise = null;
 let _profileDropdownCacheLoadedFromStorage = false;
@@ -6699,7 +6718,7 @@ async function loadProfilesPanel() {
       card.innerHTML = `
         <div class="profile-card-header">
           <div style="min-width:0;flex:1">
-            <div class="profile-card-name${isActive ? ' is-active' : ''}">${gwDot}${esc(p.name)}${defaultBadge}${activeBadge}${hiddenBadge}</div>
+            <div class="profile-card-name${isActive ? ' is-active' : ''}">${gwDot}${esc(_friendlyProfileLabel(p))}${defaultBadge}${activeBadge}${hiddenBadge}</div>
             ${meta.length ? `<div class="profile-card-meta">${esc(meta.join(' \u00b7 '))}</div>` : `<div class="profile-card-meta">${esc(t('profile_no_configuration'))}</div>`}
           </div>
         </div>`;
@@ -6747,7 +6766,7 @@ function _renderProfileDetail(p, activeName){
   const body = $('profileDetailBody');
   const empty = $('profileDetailEmpty');
   if (!title || !body) return;
-  title.textContent = p.name;
+  title.textContent = _friendlyProfileLabel(p);
   const isActive = p.name === activeName;
   const isDefault = !!p.is_default;
   const statusBadge = isActive
@@ -6871,7 +6890,7 @@ function renderProfileDropdown(data) {
     const gwDot = `<span class="profile-opt-badge ${p.gateway_running ? 'running' : 'stopped'}"></span>`;
     const checkmark = p.name === active ? ' <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--link)" stroke-width="3" style="vertical-align:-1px"><polyline points="20 6 9 17 4 12"/></svg>' : '';
     const defaultBadge = p.is_default ? ` <span style="opacity:.5;font-weight:400">${esc(t('profile_default_label'))}</span>` : '';
-    opt.innerHTML = `<div class="profile-opt-name">${gwDot}${esc(p.name)}${defaultBadge}${checkmark}</div>` +
+    opt.innerHTML = `<div class="profile-opt-name">${gwDot}${esc(_friendlyProfileLabel(p))}${defaultBadge}${checkmark}</div>` +
       (meta.length ? `<div class="profile-opt-meta">${esc(meta.join(' \u00b7 '))}</div>` : '');
     opt.onclick = async () => {
       closeProfileDropdown();
@@ -6890,7 +6909,11 @@ function renderProfileDropdown(data) {
   }
   // Sync titlebar label to the resolved active profile
   const tbl = $('titlebarProfileLabel');
-  if (tbl) tbl.textContent = active;
+  const activeProfileObj = profiles.find(p => p.name === active) || allProfiles.find(p => p.name === active);
+  const activeLabel = _friendlyProfileLabel(activeProfileObj || active);
+  if (tbl) tbl.textContent = activeLabel;
+  const chipLbl = $('profileChipLabel');
+  if (chipLbl) chipLbl.textContent = activeLabel;
 }
 
 function toggleProfileDropdown(e) {
@@ -7006,9 +7029,10 @@ async function switchToProfile(name) {
   const _openingExistingSidebarSession = !!(typeof _profileSwitchOpeningExistingSession !== 'undefined' && _profileSwitchOpeningExistingSession);
   if (_chip) { _chip.classList.add('switching'); _chip.disabled = true; }
   if (_titlebarBtn) { _titlebarBtn.classList.add('switching'); _titlebarBtn.disabled = true; }
-  // Optimistic name update — shows the target name right away
-  if (_chipLabel) _chipLabel.textContent = name;
-  if (_titlebarLabel) _titlebarLabel.textContent = name;
+  // Optimistic name update — shows the friendly display name right away
+  const _optimisticLabel = _friendlyProfileLabel(name);
+  if (_chipLabel) _chipLabel.textContent = _optimisticLabel;
+  if (_titlebarLabel) _titlebarLabel.textContent = _optimisticLabel;
 
   // ── Clear stale content + show loading skeletons immediately (#4662) ───────
   // The conversation list and workspace tree still show the PREVIOUS profile's

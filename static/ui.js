@@ -7,8 +7,32 @@
 // See api/todo_state.py for the wire contract.
 const S={session:null,messages:[],entries:[],busy:false,pendingFiles:[],toolCalls:[],activeStreamId:null,currentDir:'.',activeProfile:'default',activeProfileIsDefault:true,showHiddenWorkspaceFiles:false,todos:[],todoStateMeta:null,_pendingSessionToolsets:null};
 
+function profileDisplayName(profileOrName){
+  // Prefer API display_name over internal id. Always return a plain string.
+  const FALLBACK = {default:'Hermes Agent', jaeger:'Jaeger', openclaw:'OpenClaw', roundtable:'Roundtable'};
+  try{
+    if(profileOrName && typeof profileOrName === 'object'){
+      const dn = profileOrName.display_name;
+      if(typeof dn === 'string' && dn.trim()) return dn.trim();
+      const n = profileOrName.name;
+      if(typeof n === 'string' && n.trim()) return FALLBACK[n.trim()] || n.trim();
+      return 'Hermes Agent';
+    }
+    const name = (typeof profileOrName === 'string' && profileOrName.trim())
+      ? profileOrName.trim()
+      : ((S && S.activeProfile) || 'default');
+    if(typeof _profilesCache !== 'undefined' && _profilesCache && Array.isArray(_profilesCache.profiles)){
+      const hit = _profilesCache.profiles.find(p => p && p.name === name);
+      if(hit && typeof hit.display_name === 'string' && hit.display_name.trim()) return hit.display_name.trim();
+    }
+    return FALLBACK[name] || (name.charAt(0).toUpperCase() + name.slice(1));
+  }catch(_){
+    return 'Hermes Agent';
+  }
+}
 function assistantDisplayName(){
-  if(S.activeProfile&&S.activeProfile!=='default') return S.activeProfile.charAt(0).toUpperCase()+S.activeProfile.slice(1);
+  const label = profileDisplayName(S.activeProfile || 'default');
+  if(typeof label === 'string' && label && label !== 'default') return label;
   return window._botName||'Hermes';
 }
 const INFLIGHT={};  // keyed by session_id while request in-flight
@@ -11005,9 +11029,9 @@ function syncTopbar(){
     if(typeof syncAppTitlebar==='function') syncAppTitlebar();
     // Update profile chip even when no session is active (e.g. right after profile switch)
     const _profileLabel=$('profileChipLabel');
-    if(_profileLabel) _profileLabel.textContent=S.activeProfile||'default';
+    if(_profileLabel) _profileLabel.textContent=profileDisplayName(S.activeProfile||'default');
     const _titleLabel=$('titlebarProfileLabel');
-    if(_titleLabel) _titleLabel.textContent=S.activeProfile||'default';
+    if(_titleLabel) _titleLabel.textContent=profileDisplayName(S.activeProfile||'default');
     return;
   }
   const sessionTitle=S.session.title||t('untitled');
@@ -11132,9 +11156,9 @@ function syncTopbar(){
   // scoping project/session operations to the session's own profile — is
   // unaffected by this line.
   const profileLabel=$('profileChipLabel');
-  if(profileLabel) profileLabel.textContent=S.activeProfile||'default';
+  if(profileLabel) profileLabel.textContent=profileDisplayName(S.activeProfile||'default');
   const titleLabel=$('titlebarProfileLabel');
-  if(titleLabel) titleLabel.textContent=S.activeProfile||'default';
+  if(titleLabel) titleLabel.textContent=profileDisplayName(S.activeProfile||'default');
 }
 
 function msgContent(m){
