@@ -14733,16 +14733,31 @@ def handle_get(handler, parsed) -> bool:
         # GLOBAL last-workspace file (the #5169 regression Codex flagged). It is
         # profile-scoped via the per-request hermes_profile cookie set in server.py.
         # Fail open: a resolution error must never 500 this boot-critical endpoint.
+        # Surfaces: also fail open on hang — never let workspace resolve burn the
+        # frontend's slow-request budget (Auditor #2b flaky timeouts).
+        _profile_default_workspace = None
         try:
-            _profile_default_workspace = get_profile_default_workspace()
+            import concurrent.futures as _fut
+            with _fut.ThreadPoolExecutor(max_workers=1) as _ex:
+                _fut_res = _ex.submit(get_profile_default_workspace)
+                try:
+                    _profile_default_workspace = _fut_res.result(timeout=1.5)
+                except _fut.TimeoutError:
+                    logger.warning("profile/active workspace resolve timed out; continuing without default_workspace")
+                    _profile_default_workspace = None
         except Exception:
             logger.debug("Failed to resolve profile default workspace for /api/profile/active", exc_info=True)
             _profile_default_workspace = None
+        try:
+            _active_home = str(profiles_api.get_active_hermes_home())
+        except Exception:
+            logger.debug("Failed to resolve active hermes home for /api/profile/active", exc_info=True)
+            _active_home = ""
         return j(
             handler,
             {
                 "name": active_profile_name,
-                "path": str(profiles_api.get_active_hermes_home()),
+                "path": _active_home,
                 "is_default": profiles_api._is_root_profile(active_profile_name),
                 "default_workspace": _profile_default_workspace,
             },
@@ -18827,6 +18842,164 @@ def _runner_event_id(run_id: str, entry: dict) -> str | None:
     return None
 
 
+
+def _persist_runner_done_to_webui_session(session_id: str, done_payload, *, run_id: str | None = None) -> bool:
+    """Write runner-local terminal ``done.session`` into the WebUI sidecar.
+
+    Runner-local owns execution outside WebUI ``STREAMS``, so the SSE relay
+    alone never commits messages. Without this writeback, GET /api/session
+    stays empty after a successful turn (and the sidebar never lists it).
+    Idempotent when messages already match the done payload length.
+    """
+    sid = str(session_id or "").strip()
+    if not sid:
+        return False
+    payload = done_payload if isinstance(done_payload, dict) else {}
+    embedded = payload.get("session") if isinstance(payload.get("session"), dict) else None
+    if embedded is None and ("messages" in payload or "context_messages" in payload):
+        embedded = payload
+    if not isinstance(embedded, dict):
+        return False
+    messages = embedded.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return False
+    try:
+        from api.models import Session, get_session
+        from api.config import LOCK, SESSIONS
+    except Exception:
+        logger.exception("runner writeback imports failed for session %s", sid)
+        return False
+    try:
+        try:
+            s = get_session(sid)
+        except KeyError:
+            s = Session.load(sid)
+            if s is None:
+                # Materialize a WebUI sidecar for first-turn deferred sessions.
+                s = Session(
+                    session_id=sid,
+                    title=str(embedded.get("title") or "Untitled"),
+                    workspace=str(embedded.get("workspace") or ""),
+                    model=str(embedded.get("model") or ""),
+                    model_provider=embedded.get("model_provider"),
+                    profile=str(embedded.get("profile") or "default"),
+                )
+        existing = list(getattr(s, "messages", None) or [])
+        if len(existing) >= len(messages):
+            # Already persisted (or longer); still clear pending/stream markers.
+            pass
+        else:
+            s.messages = [dict(m) if isinstance(m, dict) else m for m in messages]
+        if embedded.get("title"):
+            s.title = embedded.get("title")
+        if embedded.get("model"):
+            s.model = embedded.get("model")
+        if embedded.get("model_provider") is not None:
+            s.model_provider = embedded.get("model_provider")
+        s.message_count = len(s.messages or [])
+        s.pending_user_message = None
+        s.pending_attachments = []
+        s.pending_started_at = None
+        s.pending_user_source = None
+        s.active_stream_id = None
+        s.is_streaming = False
+        if not getattr(s, "profile", None):
+            s.profile = embedded.get("profile") or "default"
+        if not getattr(s, "source", None):
+            try:
+                s.source = "webui"
+            except Exception:
+                pass
+        s.save()
+        try:
+            with LOCK:
+                SESSIONS[sid] = s
+                SESSIONS.move_to_end(sid)
+        except Exception:
+            logger.debug("runner writeback LRU update failed for %s", sid, exc_info=True)
+        logger.info(
+            "runner writeback persisted session %s run=%s messages=%s",
+            sid,
+            run_id,
+            len(s.messages or []),
+        )
+        return True
+    except Exception:
+        logger.exception("runner writeback failed for session %s run=%s", sid, run_id)
+        return False
+
+
+_RUNNER_WRITEBACK_LOCK = threading.Lock()
+_RUNNER_WRITEBACK_STARTED: set[str] = set()
+
+
+def _spawn_runner_session_writeback(run_id: str, session_id: str) -> None:
+    """Background observer: persist done.session even if no browser SSE attaches."""
+    rid = str(run_id or "").strip()
+    sid = str(session_id or "").strip()
+    if not rid or not sid:
+        return
+    with _RUNNER_WRITEBACK_LOCK:
+        if rid in _RUNNER_WRITEBACK_STARTED:
+            return
+        _RUNNER_WRITEBACK_STARTED.add(rid)
+
+    def _worker():
+        try:
+            from api.runtime_adapter import build_runtime_adapter, runtime_adapter_runner_enabled
+
+            if not runtime_adapter_runner_enabled():
+                return
+            adapter = build_runtime_adapter(runner_client_factory=_runtime_runner_client_factory)
+            if adapter is None:
+                return
+            cursor = None
+            deadline = time.time() + 900  # 15m safety
+            while time.time() < deadline:
+                try:
+                    event_stream = adapter.observe_run(rid, cursor=cursor)
+                except Exception:
+                    logger.debug("runner writeback observe failed for %s", rid, exc_info=True)
+                    time.sleep(0.5)
+                    continue
+                for entry in list(getattr(event_stream, "events", []) or []):
+                    if not isinstance(entry, dict):
+                        continue
+                    event = _runner_event_name(entry)
+                    payload = _runner_event_payload(entry)
+                    if event in ("done", "error", "apperror", "stream_end") or event in SSE_RELAY_CLOSE_EVENTS:
+                        if isinstance(payload, dict):
+                            _persist_runner_done_to_webui_session(sid, payload, run_id=rid)
+                        return
+                next_cursor = getattr(event_stream, "cursor", None)
+                if next_cursor not in (None, ""):
+                    cursor = str(next_cursor)
+                try:
+                    status = adapter.get_run(rid)
+                except Exception:
+                    status = None
+                state = str(getattr(status, "terminal_state", None) or getattr(status, "status", "") or "").lower()
+                if state in ("completed", "complete", "failed", "error", "cancelled", "canceled"):
+                    # Terminal without a done payload — still try one more observe from start
+                    try:
+                        final = adapter.observe_run(rid, cursor=None)
+                        for entry in list(getattr(final, "events", []) or []):
+                            if isinstance(entry, dict) and _runner_event_name(entry) in ("done", "error", "apperror"):
+                                _persist_runner_done_to_webui_session(sid, _runner_event_payload(entry), run_id=rid)
+                                return
+                    except Exception:
+                        logger.debug("runner writeback final observe failed for %s", rid, exc_info=True)
+                    return
+                time.sleep(0.25)
+        except Exception:
+            logger.exception("runner writeback worker crashed for run %s", rid)
+        finally:
+            with _RUNNER_WRITEBACK_LOCK:
+                _RUNNER_WRITEBACK_STARTED.discard(rid)
+
+    threading.Thread(target=_worker, name=f"runner-writeback-{rid[:12]}", daemon=True).start()
+
+
 def _stream_runner_run_events(handler, run_id: str, cursor: str | None = None) -> bool:
     """Stream events from a configured runner without WebUI-owned runtime maps."""
     run_id = str(run_id or "").strip()
@@ -18863,7 +19036,18 @@ def _stream_runner_run_events(handler, run_id: str, cursor: str | None = None) -
                 if not isinstance(entry, dict):
                     continue
                 event = _runner_event_name(entry)
-                _sse_with_id(handler, event, _project_runner_event_payload(_runner_event_payload(entry)), _runner_event_id(run_id, entry))
+                _raw_payload = _runner_event_payload(entry)
+                if event in SSE_RELAY_CLOSE_EVENTS or event in ("done", "error", "apperror"):
+                    try:
+                        _status = adapter.get_run(run_id)
+                        _sid = str(getattr(_status, "session_id", None) or "")
+                    except Exception:
+                        _sid = ""
+                    if not _sid and isinstance(_raw_payload, dict):
+                        _sid = str((_raw_payload.get("session") or {}).get("session_id") or _raw_payload.get("session_id") or "")
+                    if _sid and isinstance(_raw_payload, dict):
+                        _persist_runner_done_to_webui_session(_sid, _raw_payload, run_id=run_id)
+                _sse_with_id(handler, event, _project_runner_event_payload(_raw_payload), _runner_event_id(run_id, entry))
                 emitted = True
                 if event in SSE_RELAY_CLOSE_EVENTS:
                     terminal = True
@@ -23565,6 +23749,10 @@ def _start_run(
             )
         except NotImplementedError as exc:
             return {"error": str(exc), "_status": 501}
+        try:
+            _spawn_runner_session_writeback(getattr(result, "stream_id", None) or getattr(result, "run_id", None), s.session_id)
+        except Exception:
+            logger.debug("failed to spawn runner writeback for %s", getattr(s, "session_id", None), exc_info=True)
         return _chat_start_response_from_run_start(result)
 
     return _start_chat_stream_for_session(
