@@ -1238,7 +1238,7 @@ const LOCALES = {
     settings_desc_webhook_sessions: 'Surface webhook runs as conversations in the sidebar. Only active when non-WebUI sessions are enabled. Defaults off; high-volume routes can flood the sidebar.',
     settings_desc_kanban_sessions: 'Surface kanban worker runs as conversations in the sidebar. Only active when non-WebUI sessions are enabled. Defaults off; worker runs are internal and can flood the sidebar.',
     settings_desc_previous_messaging_sessions: 'Show older Discord, Telegram, Slack, and Weixin sessions that were replaced by reset or compression.',
-    settings_desc_sync_insights: 'Mirrors WebUI token usage to state.db so hermes /insights includes browser session data. Off by default.',
+    settings_desc_sync_insights: 'Mirrors WebUI token usage to state.db so Jaeger /insights includes browser session data. Off by default.',
     settings_desc_check_updates: 'Show a banner when newer versions of the WebUI or Agent are available. Runs a background git fetch periodically.',
     settings_desc_ignore_agent_updates: 'Keep WebUI update checks on, but hide Agent update notices and skip Agent update fetches.',
     settings_desc_whats_new_summary: "Changes the What's New action from opening the raw diff first to generating a short, human-readable summary. The regular diff comparison stays available after the summary.",
