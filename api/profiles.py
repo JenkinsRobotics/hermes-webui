@@ -1743,8 +1743,15 @@ def switch_profile(name: str, *, process_wide: bool = True) -> dict:
         except Exception:
             default_workspace = str(Path.home())
 
+    # Per-client switches (process_wide=False) do not update TLS/cookie yet, so
+    # list_profiles_api()'s is_active still reflects the OLD profile. Stamp flags
+    # to match the switched-to name the response advertises as active.
+    profiles = list_profiles_api()
+    for row in profiles:
+        if isinstance(row, dict) and 'name' in row:
+            row['is_active'] = row['name'] == name
     return {
-        'profiles': list_profiles_api(),
+        'profiles': profiles,
         'active': name,
         'is_default': _is_root_profile(name),
         'default_model': default_model,

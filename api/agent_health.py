@@ -458,7 +458,7 @@ def _runtime_detail_subset(runtime_status: dict[str, Any] | None) -> dict[str, A
 
 _REMOTE_PROBE_TIMEOUT_S: float = 2.0
 _REMOTE_PROBE_CACHE_TTL_S: float = 5.0
-_REMOTE_PROBE_PATHS: tuple[str, ...] = ("/health/detailed", "/health", "/v1/health")
+_REMOTE_PROBE_PATHS: tuple[str, ...] = ("/health/detailed", "/health", "/v1/health", "/api/health")
 # A gateway health payload is small JSON; cap the 2xx body read so a large or
 # slow-trickled remote response can't hang /api/health/agent or balloon memory.
 _REMOTE_PROBE_BODY_LIMIT_BYTES: int = 64 * 1024
@@ -503,6 +503,10 @@ def _remote_gateway_base_url() -> str | None:
         "HERMES_GATEWAY_HEALTH_URL",
         "HERMES_API_URL",
         "HERMES_WEBUI_GATEWAY_BASE_URL",
+        # Jaeger Surfaces: persistence spine + runner adapter (same health shape).
+        "JAEGER_GATEWAY_URL",
+        "HERMES_WEBUI_RUNNER_BASE_URL",
+        "JAEGER_RUNNER_BASE_URL",
     ):
         val = os.environ.get(var, "").strip()
         if val:
