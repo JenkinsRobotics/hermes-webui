@@ -16736,6 +16736,29 @@ def handle_post(handler, parsed) -> bool:
         return _handle_gateway_lifecycle(handler, parsed.path.rsplit("/", 1)[-1], body)
 
     # ── Profile API (POST) ──
+    # ── Jaeger Gateway handoff + approvals (POST) ──
+    if parsed.path.endswith("/handoff") and (
+        parsed.path.startswith("/api/agents/") or parsed.path.startswith("/v1/agents/")
+    ):
+        import json as _json
+        suffix = parsed.path.split("/agents/", 1)[-1]
+        raw = _json.dumps(body or {}).encode("utf-8")
+        return _proxy_jaeger_gateway(handler, "POST", f"/v1/agents/{suffix}", raw)
+
+    if parsed.path.startswith("/api/approvals/") or parsed.path.startswith("/v1/approvals/"):
+        import json as _json
+        suffix = parsed.path.split("/approvals/", 1)[-1]
+        raw = _json.dumps(body or {}).encode("utf-8")
+        return _proxy_jaeger_gateway(handler, "POST", f"/v1/approvals/{suffix}", raw)
+
+    if parsed.path.endswith("/handoff") and (
+        parsed.path.startswith("/api/sessions/") or parsed.path.startswith("/v1/sessions/")
+    ):
+        import json as _json
+        suffix = parsed.path.split("/sessions/", 1)[-1]
+        raw = _json.dumps(body or {}).encode("utf-8")
+        return _proxy_jaeger_gateway(handler, "POST", f"/v1/sessions/{suffix}", raw)
+
     # ── Jaeger Gateway agents (POST) ──
     if parsed.path in {"/api/agents", "/v1/agents"}:
         import json as _json
