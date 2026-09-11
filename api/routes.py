@@ -24515,7 +24515,14 @@ def _handle_chat_sync(handler, body):
         return j(handler, stale_response, status=409)
     if _session_is_subagent_view_only(str(body.get("session_id") or "")):
         return bad(handler, "Subagent sessions are view-only and cannot be written from WebUI", 400)
-    s = get_session(body["session_id"])
+    try:
+        sid = require(body, "session_id")
+    except ValueError as e:
+        return bad(handler, str(e))
+    try:
+        s = get_session(sid)
+    except KeyError:
+        return bad(handler, "Session not found", 404)
     msg = str(body.get("message", "")).strip()
     if not msg:
         return j(handler, {"error": "empty message"}, status=400)

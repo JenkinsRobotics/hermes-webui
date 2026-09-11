@@ -2010,6 +2010,7 @@ def _build_profile_rows_fast() -> list | None:
             'provider': provider,
             'has_env': (home / '.env').exists(),
             'visible': _profile_visible_from_meta(home),
+            'display_name': _profile_display_name_from_meta(home, name),
             'skill_count': enabled_count,
             'enabled_skills': enabled_count,
             'total_skills': total_count,
@@ -2078,6 +2079,7 @@ def list_profiles_api() -> list:
                         'provider': p.provider,
                         'has_env': p.has_env,
                         'visible': _profile_visible_from_meta(p.path),
+                        'display_name': _profile_display_name_from_meta(p.path, p.name),
                         'skill_count': enabled_count,
                         'enabled_skills': enabled_count,
                         'total_skills': total_count,
@@ -2143,6 +2145,7 @@ def list_profiles_api() -> list:
                 'provider': p.provider,
                 'has_env': p.has_env,
                 'visible': _profile_visible_from_meta(p.path),
+                'display_name': _profile_display_name_from_meta(p.path, p.name),
                 'skill_count': enabled_count,
                 'enabled_skills': enabled_count,
                 'total_skills': total_count,
@@ -2151,6 +2154,30 @@ def list_profiles_api() -> list:
 
     active = get_active_profile_name()
     return [{**p, 'is_active': p['name'] == active} for p in rows]
+
+
+def _profile_display_name_from_meta(profile_path: Path, name: str) -> str:
+    """Friendly label from profile.yaml; fall back to known Jaeger Surface names."""
+    fallback = {
+        'default': 'Hermes Agent',
+        'jaeger': 'Jaeger',
+        'openclaw': 'OpenClaw',
+        'roundtable': 'Roundtable',
+        'ares': 'ARES',
+    }.get(str(name or '').strip().lower() or 'default', str(name or 'profile'))
+    try:
+        meta_path = Path(profile_path) / 'profile.yaml'
+        if not meta_path.exists():
+            return fallback
+        data = yaml.safe_load(meta_path.read_text(encoding='utf-8'))
+    except Exception:
+        return fallback
+    if not isinstance(data, dict):
+        return fallback
+    dn = data.get('display_name')
+    if isinstance(dn, str) and dn.strip():
+        return dn.strip()
+    return fallback
 
 
 def _profile_visible_from_meta(profile_path: Path) -> bool:
@@ -2181,6 +2208,7 @@ def _default_profile_dict() -> dict:
         'provider': None,
         'has_env': (_DEFAULT_HERMES_HOME / '.env').exists(),
         'visible': True,
+        'display_name': _profile_display_name_from_meta(_DEFAULT_HERMES_HOME, 'default'),
         'skill_count': enabled_count,
         'enabled_skills': enabled_count,
         'total_skills': compatible_count,
