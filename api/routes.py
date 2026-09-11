@@ -12863,8 +12863,71 @@ def _render_index_shell_base() -> str:
     return base
 
 
+
+def _jaeger_gateway_bases() -> list[str]:
+    import os
+    bases: list[str] = []
+    for key in ("JAEGER_GATEWAY_URL", "HERMES_WEBUI_GATEWAY_URL"):
+        raw = (os.environ.get(key) or "").strip().rstrip("/")
+        if raw:
+            bases.append(raw)
+    bases.append("http://127.0.0.1:8810")
+    runner = (
+        os.environ.get("HERMES_WEBUI_RUNNER_BASE_URL")
+        or os.environ.get("JAEGER_RUNNER_BASE_URL")
+        or "http://127.0.0.1:8791"
+    ).rstrip("/")
+    if runner:
+        bases.append(runner)
+    out: list[str] = []
+    for b in bases:
+        if b and b not in out:
+            out.append(b)
+    return out
+
+
+def _proxy_jaeger_gateway(handler, method: str, path: str, body: bytes | None = None):
+    """Server-side proxy so browser clients on :8790 reach Gateway :8810."""
+    import json as _json
+    import http.client
+    from urllib.parse import urlparse
+
+    last_err = "no gateway bases"
+    for base in _jaeger_gateway_bases():
+        parsed_base = urlparse(base)
+        host = parsed_base.hostname or "127.0.0.1"
+        port = parsed_base.port or (443 if parsed_base.scheme == "https" else 80)
+        try:
+            conn = http.client.HTTPConnection(host, port, timeout=3)
+            headers = {"Accept": "application/json"}
+            if body is not None:
+                headers["Content-Type"] = "application/json"
+            conn.request(method.upper(), path, body=body, headers=headers)
+            resp = conn.getresponse()
+            payload = resp.read()
+            status = int(resp.status)
+            conn.close()
+            try:
+                parsed_json = _json.loads(payload.decode("utf-8") or "null")
+            except _json.JSONDecodeError:
+                last_err = "gateway returned non-JSON"
+                continue
+            return j(handler, parsed_json, status=status)
+        except Exception as exc:  # noqa: BLE001
+            last_err = str(exc)
+            continue
+    return bad(handler, f"gateway unreachable: {last_err}", 503)
+
+
+
 def handle_get(handler, parsed) -> bool:
     """Handle all GET routes. Returns True if handled, False for 404."""
+    try:
+        from api.jaeger_agents import route as jaeger_agents_route
+        if jaeger_agents_route(handler, parsed, "GET"):
+            return True
+    except Exception:
+        pass
     proxy_result = _handle_extension_sidecar_proxy(handler, parsed, "GET")
     if proxy_result is not False:
         return proxy_result
@@ -14626,6 +14689,16 @@ def handle_get(handler, parsed) -> bool:
     if parsed.path == "/api/memory":
         return _handle_memory_read(handler, parsed)
 
+    # ── Jaeger Gateway agents (GET) — Surfaces spine parity with :8810 ──
+    if parsed.path in {"/api/agents", "/v1/agents"}:
+        qs = ("?" + parsed.query) if parsed.query else ""
+        return _proxy_jaeger_gateway(handler, "GET", f"/v1/agents{qs}")
+
+    if parsed.path.startswith("/api/agents/") or parsed.path.startswith("/v1/agents/"):
+        suffix = parsed.path.split("/agents/", 1)[-1]
+        if suffix and not suffix.endswith("/activate"):
+            return _proxy_jaeger_gateway(handler, "GET", f"/v1/agents/{suffix}")
+
     # ── Profile API (GET) ──
     if parsed.path == "/api/profiles":
         from api import profiles as profiles_api
@@ -14918,6 +14991,12 @@ def _resolve_new_session_workspace(body, visible_prev_session_id):
 
 def handle_post(handler, parsed) -> bool:
     """Handle all POST routes. Returns True if handled, False for 404."""
+    try:
+        from api.jaeger_agents import route as jaeger_agents_route
+        if jaeger_agents_route(handler, parsed, "POST"):
+            return True
+    except Exception:
+        pass
     diag = RequestDiagnostics.maybe_start("POST", parsed.path, logger=logger, print_fn=getattr(handler, '_safe_webui_print', None))
     if parsed.path == "/api/csp-report":
         if diag:
@@ -16642,6 +16721,18 @@ def handle_post(handler, parsed) -> bool:
         return _handle_gateway_lifecycle(handler, parsed.path.rsplit("/", 1)[-1], body)
 
     # ── Profile API (POST) ──
+    # ── Jaeger Gateway agents (POST) ──
+    if parsed.path in {"/api/agents", "/v1/agents"}:
+        import json as _json
+        raw = _json.dumps(body or {}).encode("utf-8")
+        return _proxy_jaeger_gateway(handler, "POST", "/v1/agents", raw)
+
+    if parsed.path.endswith("/activate") and (
+        parsed.path.startswith("/api/agents/") or parsed.path.startswith("/v1/agents/")
+    ):
+        suffix = parsed.path.split("/agents/", 1)[-1]
+        return _proxy_jaeger_gateway(handler, "POST", f"/v1/agents/{suffix}")
+
     if parsed.path == "/api/profile/switch":
         name = body.get("name", "").strip()
         if not name:
