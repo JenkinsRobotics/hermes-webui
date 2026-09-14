@@ -53,6 +53,9 @@ class HttpRunnerClient:
             raise NotImplementedError("runner-local chat backend is not configured")
         return cls(base_url=base_url, api_key=str(source.get(_RUNNER_API_KEY_ENV) or ""))
 
+    def list_profiles(self) -> dict[str, Any]:
+        return self._get('/v1/profiles')
+
     def start_run(self, request) -> dict[str, Any]:
         return self._post("/v1/runs", {
             "session_id": request.session_id,

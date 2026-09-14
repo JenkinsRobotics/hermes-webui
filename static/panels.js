@@ -6487,7 +6487,7 @@ async function switchToWorkspace(path,name){
 // ── Profile panel + dropdown ──
 
 function _friendlyProfileLabel(pOrName){
-  const FALLBACK = {default:'Hermes Agent', jaeger:'Jaeger', openclaw:'OpenClaw', roundtable:'Roundtable'};
+  const FALLBACK = {default:'Hermes Agent', hermes:'Hermes Agent', jaeger:'Jaeger AI', openclaw:'OpenClaw', roundtable:'Roundtable'};
   try{
     if(pOrName && typeof pOrName === 'object'){
       const dn = pOrName.display_name;
@@ -6707,10 +6707,11 @@ async function loadProfilesPanel() {
       const meta = [];
       if (typeof p.model === 'string' && p.model) meta.push(p.model.split('/').pop());
       if (p.provider) meta.push(p.provider);
+      if (p.runtime_status && !p.gateway_running) meta.push(p.runtime_status);
       if (p.total_skills && p.total_skills > 0) meta.push(t('profile_skill_count', p.total_skills).replace(String(p.total_skills), `${p.enabled_skills} / ${p.total_skills}`));
       const gwDot = p.gateway_running
-        ? `<span class="profile-opt-badge running" title="${esc(t('profile_gateway_running'))}"></span>`
-        : `<span class="profile-opt-badge stopped" title="${esc(t('profile_gateway_stopped'))}"></span>`;
+        ? `<span class="profile-opt-badge running" title="${esc(p.runtime_status || t('profile_gateway_running'))}"></span>`
+        : `<span class="profile-opt-badge stopped" title="${esc(p.runtime_status || t('profile_gateway_stopped'))}"></span>`;
       const isActive = p.name === activeName;
       const activeBadge = isActive ? `<span style="color:var(--link);font-size:10px;font-weight:600;margin-left:6px">${esc(t('profile_active'))}</span>` : '';
       const defaultBadge = p.is_default ? ` <span style="opacity:.5">${esc(t('profile_default_label'))}</span>` : '';
@@ -6774,8 +6775,8 @@ function _renderProfileDetail(p, activeName){
     : `<span class="detail-badge">Inactive</span>`;
   const defaultBadge = isDefault ? ` <span class="detail-badge">${esc(t('profile_default_label'))}</span>` : '';
   const gwBadge = p.gateway_running
-    ? `<span class="detail-badge ok">${esc(t('profile_gateway_running'))}</span>`
-    : `<span class="detail-badge">${esc(t('profile_gateway_stopped'))}</span>`;
+    ? `<span class="detail-badge ok">${esc(p.runtime_status || t('profile_gateway_running'))}</span>`
+    : `<span class="detail-badge">${esc(p.runtime_status || t('profile_gateway_stopped'))}</span>`;
   const rows = [];
   rows.push(`<div class="detail-row"><div class="detail-row-label">Status</div><div class="detail-row-value">${statusBadge}${defaultBadge}</div></div>`);
   rows.push(`<div class="detail-row"><div class="detail-row-label">Gateway</div><div class="detail-row-value">${gwBadge}</div></div>`);
@@ -6886,8 +6887,9 @@ function renderProfileDropdown(data) {
     opt.className = 'profile-opt' + (p.name === active ? ' active' : '');
     const meta = [];
     if (typeof p.model === 'string' && p.model) meta.push(p.model.split('/').pop());
+    if (p.runtime_status && !p.gateway_running) meta.push(p.runtime_status);
     if (p.total_skills && p.total_skills > 0) meta.push(t('profile_skill_count', p.total_skills).replace(String(p.total_skills), `${p.enabled_skills} / ${p.total_skills}`));
-    const gwDot = `<span class="profile-opt-badge ${p.gateway_running ? 'running' : 'stopped'}"></span>`;
+    const gwDot = `<span class="profile-opt-badge ${p.gateway_running ? 'running' : 'stopped'}" title="${esc(p.runtime_status || (p.gateway_running ? t('profile_gateway_running') : t('profile_gateway_stopped')))}"></span>`;
     const checkmark = p.name === active ? ' <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--link)" stroke-width="3" style="vertical-align:-1px"><polyline points="20 6 9 17 4 12"/></svg>' : '';
     const defaultBadge = p.is_default ? ` <span style="opacity:.5;font-weight:400">${esc(t('profile_default_label'))}</span>` : '';
     opt.innerHTML = `<div class="profile-opt-name">${gwDot}${esc(_friendlyProfileLabel(p))}${defaultBadge}${checkmark}</div>` +

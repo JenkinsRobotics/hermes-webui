@@ -100,6 +100,7 @@ def test_profile_dropdown_prefetches_after_page_load():
 
 def test_poisoned_profile_cache_opens_then_switches_after_fresh_refresh():
     snippets = [
+        _function_body(PANELS_JS, "function _friendlyProfileLabel(pOrName){"),
         PANELS_JS[
             PANELS_JS.index("let _profilesCache = null;") : PANELS_JS.index("async function _profileSwitchPanelLoad(){")
         ],

@@ -2059,6 +2059,36 @@ def list_profiles_api() -> list:
     global _LIST_PROFILES_CACHE
     now = time.time()
 
+    from api.runtime_adapter import runtime_adapter_runner_enabled
+    if (runtime_adapter_runner_enabled()
+            and os.getenv('HERMES_WEBUI_RUNNER_PROFILES') == '1'
+            and not _is_isolated_profile_mode()):
+        from api.runner_client import HttpRunnerClient
+        # The accepting runtime owns selectable identities and readiness. A
+        # directory created by ancillary Hermes services is not a chat backend.
+        rows = HttpRunnerClient.from_env().list_profiles()['profiles']
+        active = get_active_profile_name()
+        result = []
+        for row in rows:
+            name = row['name']
+            if not _PROFILE_ID_RE.fullmatch(name):
+                raise ValueError('Runner returned an invalid profile identity')
+            home = get_hermes_home_for_profile(name)
+            try:
+                cfg = yaml.safe_load((home / 'config.yaml').read_text()) or {}
+                model = cfg.get('model') or {}
+                if isinstance(model, str):
+                    model = {'default': model}
+                if not isinstance(model, dict):
+                    model = {}
+            except (OSError, ValueError, AttributeError, yaml.YAMLError):
+                model = {}
+            result.append({**row, 'path': str(home), 'is_active': name == active,
+                'model': model.get('default') if isinstance(model.get('default'), str) else None,
+                'provider': model.get('provider') if isinstance(model.get('provider'), str) else None,
+                'has_env': (home / '.env').is_file()})
+        return result
+
     # In isolated profile mode, return only the active (isolated) profile
     if _is_isolated_profile_mode():
         active = _isolated_profile_name()
