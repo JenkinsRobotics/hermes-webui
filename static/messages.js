@@ -1649,7 +1649,13 @@ async function send(){
   setComposerStatus(_submittedFiles.length?'Uploading…':'');
   let uploaded=[];
   try{uploaded=await uploadPendingFiles({files:_submittedFiles, sessionId:activeSid, clearPending:false});}
-  catch(e){if(!text){setComposerStatus(`Upload error: ${e.message}`);return;}}
+  catch(e){
+    if(!text){
+      setComposerStatus(`Upload error: ${e.message}`);
+      _restoreComposerDraftAfterFailedSend(_failedSendDraftText, _failedSendFilesSnapshot, activeSid, _composerDraftClearPromise);
+      return;
+    }
+  }
   // Clear the uploading status now that upload is done — if we don't clear here
   // it stays visible for the entire duration of the agent stream, since
   // setComposerStatus('') is only called in setBusy(false), not setBusy(true).
@@ -1838,6 +1844,24 @@ async function send(){
       if($('msgInner')) $('msgInner').innerHTML='';
       if(typeof renderSessionList==='function') void renderSessionList();
       return;
+    }
+    const conflictWrongRuntime=/belongs to another runtime|start a new chat to talk to/i.test(errMsg);
+    if(conflictWrongRuntime && !(options&&options._runtimeRetry)){
+      delete INFLIGHT[activeSid];
+      if(typeof clearInflightState==='function') clearInflightState(activeSid);
+      stopApprovalPolling();
+      stopClarifyPolling();
+      if(!_approvalSessionId || _approvalSessionId===activeSid) hideApprovalCard(true);removeThinking();
+      if(!_clarifySessionId || _clarifySessionId===activeSid) hideClarifyCard(true, 'terminal');
+      if(typeof clearOptimisticSessionStreaming==='function') clearOptimisticSessionStreaming(activeSid);
+      const retryText=_failedSendDraftText;
+      const retryFiles=_failedSendFilesSnapshot;
+      try{ if(typeof newSession==='function') await newSession(false,{worktree:false}); }catch(_){}
+      _restoreComposerDraftAfterFailedSend(retryText, retryFiles, S.session&&S.session.session_id, _composerDraftClearPromise);
+      _sendInProgress=false;_sendInProgressSid=null;
+      setBusy(false);setComposerStatus('');
+      if(typeof showToast==='function') showToast('Started a new chat — the previous conversation belonged to another profile.',2600);
+      return await send({_runtimeRetry:true});
     }
     const conflictActiveStream=/session already has an active stream/i.test(errMsg);
     if(conflictActiveStream){

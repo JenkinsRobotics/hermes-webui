@@ -6885,6 +6885,11 @@ function renderProfileDropdown(data) {
   for (const p of profiles) {
     const opt = document.createElement('div');
     opt.className = 'profile-opt' + (p.name === active ? ' active' : '');
+    const unavailable = p.gateway_running === false;
+    if (unavailable) {
+      opt.classList.add('disabled');
+      opt.setAttribute('aria-disabled', 'true');
+    }
     const meta = [];
     if (typeof p.model === 'string' && p.model) meta.push(p.model.split('/').pop());
     if (p.runtime_status && !p.gateway_running) meta.push(p.runtime_status);
@@ -6897,6 +6902,10 @@ function renderProfileDropdown(data) {
     opt.onclick = async () => {
       closeProfileDropdown();
       if (p.name === active) return;
+      if (unavailable) {
+        showToast(p.runtime_status || t('profile_gateway_stopped'));
+        return;
+      }
       await switchToProfile(p.name);
     };
     dd.appendChild(opt);
@@ -6921,6 +6930,16 @@ function renderProfileDropdown(data) {
 function toggleProfileDropdown(e) {
   const dd = $('profileDropdown');
   if (!dd) return;
+  const stuckChip = $('profileChip');
+  const stuckTitle = $('titlebarProfileBtn');
+  if (stuckChip && stuckChip.disabled && stuckChip.classList.contains('switching')) {
+    stuckChip.disabled = false;
+    stuckChip.classList.remove('switching');
+  }
+  if (stuckTitle && stuckTitle.disabled && stuckTitle.classList.contains('switching')) {
+    stuckTitle.disabled = false;
+    stuckTitle.classList.remove('switching');
+  }
   if (dd.classList.contains('open')) { closeProfileDropdown(); return; }
   closeWsDropdown(); // close workspace dropdown if open
   if(typeof closeModelDropdown==='function') closeModelDropdown();
@@ -7031,6 +7050,11 @@ async function switchToProfile(name) {
   const _openingExistingSidebarSession = !!(typeof _profileSwitchOpeningExistingSession !== 'undefined' && _profileSwitchOpeningExistingSession);
   if (_chip) { _chip.classList.add('switching'); _chip.disabled = true; }
   if (_titlebarBtn) { _titlebarBtn.classList.add('switching'); _titlebarBtn.disabled = true; }
+  const _unlockSwitchingChip = ()=>{
+    if (_chip) { _chip.classList.remove('switching'); _chip.disabled = false; }
+    if (_titlebarBtn) { _titlebarBtn.classList.remove('switching'); _titlebarBtn.disabled = false; }
+  };
+  const _unlockSwitchingTimer = setTimeout(_unlockSwitchingChip, 8000);
   // Optimistic name update — shows the friendly display name right away
   const _optimisticLabel = _friendlyProfileLabel(name);
   if (_chipLabel) _chipLabel.textContent = _optimisticLabel;
@@ -7061,6 +7085,11 @@ async function switchToProfile(name) {
     S.session.active_stream_id ||
     S.session.pending_user_message
   ));
+  // Roundtable binds the conversation to that runtime. Leaving it must open a
+  // new chat, even if the transcript is still empty, or later sends fail with
+  // "this conversation belongs to another runtime".
+  const _leavingRoundtable = (S.activeProfile === 'roundtable' || (S.session && S.session.profile === 'roundtable')) && name !== 'roundtable';
+  if (_leavingRoundtable) sessionInProgress = true;
   if (_openingExistingSidebarSession && S.session) {
     // A cross-profile sidebar click is about to load a concrete existing session.
     // Do not create or retag a blank intermediary session in the destination profile.
@@ -7096,6 +7125,10 @@ async function switchToProfile(name) {
     // error surfaces ONLY when the CURRENT switch genuinely fails (@rodboev review, #4662).
     const data = await api('/api/profile/switch', { method: 'POST', body: JSON.stringify({ name }), timeoutToast: false });
     if (_switchGen !== _profileSwitchGeneration) return false;
+    // Unlock the chip as soon as the cookie/profile is committed so a slow
+    // newSession/list refresh cannot freeze the selector on Roundtable.
+    clearTimeout(_unlockSwitchingTimer);
+    _unlockSwitchingChip();
     S.activeProfile = data.active || name;
     S.activeProfileIsDefault = !!data.is_default;
     if (typeof _resetCronUnreadForProfileSwitch === 'function') {
@@ -7231,6 +7264,7 @@ async function switchToProfile(name) {
       await renderSessionList();
       if (_switchGen !== _profileSwitchGeneration) return false;
       if (workspaceVisible && typeof clearWorkspaceTreeSkeleton === 'function') clearWorkspaceTreeSkeleton();
+      if (typeof _openProfileSwitchSessionBrowser === 'function') _openProfileSwitchSessionBrowser();
       showToast(t('profile_switched', name));
     } else {
       const workspaceVisible = typeof _workspacePanelMode !== 'undefined' && _workspacePanelMode !== 'closed';
@@ -7259,17 +7293,16 @@ async function switchToProfile(name) {
       }
       showToast(restoredSavedSession ? t('profile_switched', name) : t('profile_switched_new_conversation', name));
     }
-      // Refresh workspace file tree so the right panel shows the new
-      // profile's workspace, not the previous one (#1214).
-      if (S.session && S.session.workspace) {
-        const dirLoad = loadDir('.');
-        if (workspaceVisible) await dirLoad;
-      } else if (typeof clearWorkspaceTreeSkeleton === 'function') {
-        // New profile has no bound workspace — clear the up-front skeleton so it
-        // doesn't strand (#4662 Opus gate).
-        clearWorkspaceTreeSkeleton();
-      }
-      showToast(t('profile_switched', name));
+
+    // Refresh workspace file tree so the right panel shows the new
+    // profile's workspace, not the previous one (#1214).
+    if (S.session && S.session.workspace) {
+      const dirLoad = loadDir('.');
+      if (_workspaceVisibleAtStart) await dirLoad;
+    } else if (typeof clearWorkspaceTreeSkeleton === 'function') {
+      // New profile has no bound workspace — clear the up-front skeleton so it
+      // doesn't strand (#4662 Opus gate).
+      clearWorkspaceTreeSkeleton();
     }
 
     await _profileSwitchPanelLoad();
@@ -7303,9 +7336,9 @@ async function switchToProfile(name) {
     }
     return false;
   } finally {
+    clearTimeout(_unlockSwitchingTimer);
     // Always remove loading indicator regardless of success or failure
-    if (_switchGen === _profileSwitchGeneration && _chip) { _chip.classList.remove('switching'); _chip.disabled = false; }
-    if (_switchGen === _profileSwitchGeneration && _titlebarBtn) { _titlebarBtn.classList.remove('switching'); _titlebarBtn.disabled = false; }
+    if (_switchGen === _profileSwitchGeneration) _unlockSwitchingChip();
     // #4671 safety net: guarantee the session-list embargo is lifted on EVERY exit of the
     // current switch (success paths clear it before their authoritative render; this covers
     // early-returns/throws between skeleton-show and those clears so it can't freeze the

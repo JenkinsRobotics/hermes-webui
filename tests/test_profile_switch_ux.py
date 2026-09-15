@@ -41,15 +41,15 @@ class TestProfileSwitchSpinner:
         fn = self._get_switch_fn()
         finally_idx = fn.find("} finally {")
         assert finally_idx != -1, "switchToProfile() has no finally block."
-        assert "classList.remove('switching')" in fn[finally_idx:], (
-            "The finally block does not remove 'switching' class."
+        assert "_unlockSwitchingChip()" in fn[finally_idx:], (
+            "The finally block does not unlock the switching chip."
         )
 
     def test_optimistic_name_set_before_api_call(self):
         """Chip label must be updated to new name before the API call."""
         fn = self._get_switch_fn()
         api_call_idx = fn.find("await api('/api/profile/switch'")
-        opt_name_idx = fn.find("_chipLabel.textContent = name")
+        opt_name_idx = fn.find("_chipLabel.textContent = _optimisticLabel")
         assert opt_name_idx != -1, "No optimistic name update found."
         assert opt_name_idx < api_call_idx, (
             "Optimistic name update must happen BEFORE the API call."
@@ -63,7 +63,7 @@ class TestProfileSwitchSpinner:
         )
         finally_idx = fn.find("} finally {")
         assert finally_idx != -1
-        assert "_chip.disabled = false" in fn[finally_idx:], (
+        assert "_unlockSwitchingChip()" in fn[finally_idx:], (
             "The finally block does not re-enable the chip."
         )
 
@@ -75,6 +75,36 @@ class TestProfileSwitchSpinner:
         assert "_prevProfileName" in fn[catch_idx:], (
             "The catch block does not restore _prevProfileName."
         )
+
+    def test_switch_to_profile_keeps_try_catch_finally_intact(self):
+        """An extra brace used to close try before catch, freezing the chip on Roundtable."""
+        fn = self._get_switch_fn()
+        catch_idx = fn.find("} catch (e) {")
+        finally_idx = fn.find("} finally {")
+        assert catch_idx != -1 and finally_idx != -1
+        assert catch_idx < finally_idx
+        assert "_leavingRoundtable" in fn
+        assert "_workspaceVisibleAtStart) await dirLoad" in fn
+        assert "if (workspaceVisible) await dirLoad" not in fn
+
+    def test_chip_unlocks_before_session_replacement(self):
+        fn = self._get_switch_fn()
+        post_idx = fn.find("await api('/api/profile/switch'")
+        unlock_idx = fn.find("_unlockSwitchingChip();")
+        new_session_idx = fn.find("await newSession(")
+        assert post_idx != -1 and unlock_idx != -1 and new_session_idx != -1
+        assert post_idx < unlock_idx < new_session_idx
+
+
+def test_unavailable_profiles_are_not_actionable():
+    source = (REPO_ROOT / "static" / "panels.js").read_text(encoding="utf-8")
+    start = source.index("function renderProfileDropdown(data)")
+    end = source.index("function toggleProfileDropdown", start)
+    dropdown = source[start:end]
+    assert "const unavailable = p.gateway_running === false" in dropdown
+    assert "aria-disabled" in dropdown
+    assert "if (unavailable)" in dropdown
+    assert "await switchToProfile(p.name)" in dropdown
 
 
 class TestParallelizedFetches:
@@ -167,7 +197,7 @@ class TestParallelizedFetches:
         )
         first_in_place_patch = fn.find("if (S.session && !sessionInProgress)")
         first_update = fn.find("await api('/api/session/update'")
-        branch_idx = fn.find("if (sessionInProgress)")
+        branch_idx = fn.find("if (sessionInProgress && _openingExistingSidebarSession)")
         assert -1 not in (first_in_place_patch, first_update, branch_idx)
         assert promote_idx < first_in_place_patch < first_update < branch_idx, (
             "the stale-session promotion must happen before any in-place session "
