@@ -4433,6 +4433,39 @@ body.resizing .sidebar{transition:none!important;}
 .transparent-event-row[data-transparent-fade]{transition:opacity .22s ease;}
 .transparent-event-row[data-transparent-fade]:hover{opacity:1;}
 
+/* ── Collapsible "Worked for …" chip (Transparent Stream) ── */
+.worked-for-chip{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  margin:2px 0 10px var(--msg-rail);
+  max-width:var(--msg-max);
+  padding:5px 12px 5px 14px;
+  border:1px solid color-mix(in srgb, var(--accent, #6ea8ff) 55%, var(--border2, #3a3a40));
+  border-radius:999px;
+  background:transparent;
+  color:var(--text);
+  font:inherit;
+  font-size:13px;
+  font-weight:500;
+  line-height:1.3;
+  cursor:pointer;
+  user-select:none;
+}
+.worked-for-chip:hover{
+  background:rgba(255,255,255,.04);
+  border-color:color-mix(in srgb, var(--accent, #6ea8ff) 80%, var(--border2, #3a3a40));
+}
+.worked-for-label{white-space:nowrap;}
+.worked-for-chevron{
+  display:inline-flex;
+  opacity:.55;
+  transition:transform .18s ease;
+}
+.assistant-turn:not([data-transparent-turn-collapsed="1"]) .worked-for-chevron{
+  transform:rotate(90deg);
+}
+
 /* ── Collapsible Hermes chat name tag ───────── */
 .assistant-turn[data-transparent-turn-collapsed="1"] .transparent-event-row,
 .assistant-turn[data-transparent-turn-collapsed="1"] .transparent-event-controls,

@@ -12086,6 +12086,7 @@ function _syncTransparentEventControls(turn){
   const stashedTotal=Number(turn.getAttribute('data-transparent-total-tool-count'));
   const toolCount=(Number.isFinite(stashedTotal)&&stashedTotal>mountedToolCount)?stashedTotal:mountedToolCount;
   let bar=blocks.querySelector(':scope > .transparent-event-controls');
+  _ensureWorkedForChip(turn);
   if(!rows.length){
     if(bar) bar.remove();
     return;
@@ -12115,10 +12116,15 @@ function _syncTransparentEventControls(turn){
     bar.appendChild(label);
     bar.appendChild(expand);
     bar.appendChild(collapse);
-    // Guard: firstChild may be null (empty blocks) or orphaned from a prior
-    // DOM rebuild. Only insertBefore when it is still a child of blocks.
-    if(blocks.firstChild&&blocks.firstChild.parentNode===blocks) blocks.insertBefore(bar, blocks.firstChild);
-    else blocks.appendChild(bar);
+    const chip=blocks.querySelector(':scope > .worked-for-chip');
+    if(chip&&chip.parentNode===blocks){
+      if(chip.nextSibling) blocks.insertBefore(bar, chip.nextSibling);
+      else blocks.appendChild(bar);
+    }else if(blocks.firstChild&&blocks.firstChild.parentNode===blocks){
+      blocks.insertBefore(bar, blocks.firstChild);
+    }else{
+      blocks.appendChild(bar);
+    }
   }
   const expand=bar.querySelector('[data-transparent-expand-all]');
   if(expand){
@@ -12419,9 +12425,99 @@ function _setTransparentRowsExpanded(root, expanded){
 // max-height transition used by individual event cards. Persisted via
 // data-attribute only — the turn's render path reads it on rebuild.
 const _transparentTurnCollapsedStates={}; // key: `${sid}:${turnMsgIdx}` → boolean
+let _workedForTimer=null;
+let _workedForTimerTurn=null;
+function _transparentTurnCollapseKey(turn){
+  if(!turn||!S.session) return '';
+  const segs=turn.querySelectorAll('.assistant-segment[data-msg-idx]');
+  const seg=segs.length?segs[segs.length-1]:turn.querySelector('.assistant-segment[data-msg-idx]');
+  const mi=seg&&seg.getAttribute('data-msg-idx');
+  return mi!=null?`${S.session.session_id}:${mi}`:'';
+}
+function _isLiveAssistantTurn(turn){
+  return !!(turn&&(turn.id==='liveAssistantTurn'||turn.getAttribute('data-live-assistant-turn')==='1'));
+}
+function _setTransparentTurnCollapsed(turn, collapsed){
+  if(!turn) return;
+  const next=collapsed?'1':'0';
+  turn.setAttribute('data-transparent-turn-collapsed',next);
+  const role=turn.querySelector('.msg-role.assistant');
+  if(role) role.setAttribute('aria-expanded',collapsed?'false':'true');
+  const chip=turn.querySelector('.worked-for-chip');
+  if(chip) chip.setAttribute('aria-expanded',collapsed?'false':'true');
+  const key=_transparentTurnCollapseKey(turn);
+  if(key) _transparentTurnCollapsedStates[key]=!!collapsed;
+}
+function _toggleTransparentTurnCollapsed(turn){
+  if(!turn) return;
+  _setTransparentTurnCollapsed(turn, turn.getAttribute('data-transparent-turn-collapsed')!=='1');
+}
+function _workedForChipLabel(turn){
+  if(_isLiveAssistantTurn(turn)){
+    const started=Number(
+      turn.getAttribute('data-turn-started-at')||
+      (S.session&&S.session.pending_started_at)
+    );
+    if(Number.isFinite(started)&&started>0){
+      const text=_formatTurnDuration(_activityNowSeconds()-started);
+      return text?`Working for ${text}`:'Working…';
+    }
+    return 'Working…';
+  }
+  const msg=typeof _transparentTurnMetaMessage==='function'?_transparentTurnMetaMessage(turn):null;
+  const duration=msg&&msg._turnDuration!=null?_formatTurnDuration(msg._turnDuration):'';
+  return duration?`Worked for ${duration}`:'Worked';
+}
+function _startWorkedForTimer(turn){
+  if(!_isLiveAssistantTurn(turn)) return;
+  _workedForTimerTurn=turn;
+  if(!_workedForTimer) _workedForTimer=setInterval(function(){
+    const live=_workedForTimerTurn;
+    if(!live||!live.isConnected||!_isLiveAssistantTurn(live)){
+      if(_workedForTimer){clearInterval(_workedForTimer);_workedForTimer=null;}
+      _workedForTimerTurn=null;
+      return;
+    }
+    _ensureWorkedForChip(live);
+  },1000);
+}
+function _ensureWorkedForChip(turn){
+  if(!turn||!isTransparentStream()) return null;
+  const blocks=_assistantTurnBlocks(turn);
+  if(!blocks) return null;
+  const hasRows=!!blocks.querySelector(':scope > .transparent-event-row');
+  let chip=blocks.querySelector(':scope > .worked-for-chip');
+  if(!hasRows){
+    if(chip) chip.remove();
+    return null;
+  }
+  if(_isLiveAssistantTurn(turn)&&!turn.getAttribute('data-turn-started-at')&&S.session&&S.session.pending_started_at){
+    turn.setAttribute('data-turn-started-at',String(S.session.pending_started_at));
+  }
+  if(!chip){
+    chip=document.createElement('button');
+    chip.type='button';
+    chip.className='worked-for-chip';
+    chip.innerHTML=`<span class="worked-for-label"></span><span class="worked-for-chevron">${li('chevron-right',12)}</span>`;
+    chip.addEventListener('click',function(ev){
+      ev.preventDefault();
+      ev.stopPropagation();
+      _toggleTransparentTurnCollapsed(turn);
+    });
+    if(blocks.firstChild&&blocks.firstChild.parentNode===blocks) blocks.insertBefore(chip, blocks.firstChild);
+    else blocks.appendChild(chip);
+  }
+  const label=chip.querySelector('.worked-for-label');
+  if(label) label.textContent=_workedForChipLabel(turn);
+  chip.setAttribute('aria-expanded',turn.getAttribute('data-transparent-turn-collapsed')==='1'?'false':'true');
+  chip.setAttribute('aria-label',label?label.textContent:'Worked');
+  if(_isLiveAssistantTurn(turn)) _startWorkedForTimer(turn);
+  return chip;
+}
 function _wireTransparentTurnToggle(turn){
   if(!turn) return;
   if(!isTransparentStream()) return;
+  _ensureWorkedForChip(turn);
   const role=turn.querySelector('.msg-role.assistant');
   if(!role) return;
   turn.setAttribute('data-transparent-turn-toggle-bound','1');
@@ -12437,17 +12533,7 @@ function _wireTransparentTurnToggle(turn){
   role.setAttribute('aria-expanded',turn.getAttribute('data-transparent-turn-collapsed')==='1'?'false':'true');
   const toggle=function(ev){
     if(ev&&ev.target&&ev.target.closest&&ev.target.closest('.msg-tps-inline')) return;
-    const collapsed=turn.getAttribute('data-transparent-turn-collapsed')==='1';
-    turn.setAttribute('data-transparent-turn-collapsed',collapsed?'0':'1');
-    role.setAttribute('aria-expanded',collapsed?'true':'false');
-    // Persist state across DOM rebuilds.
-    if(S.session){
-      const seg=turn.querySelector('.assistant-segment');
-      if(seg){
-        const mi=seg.getAttribute('data-msg-idx');
-        if(mi!=null) _transparentTurnCollapsedStates[`${S.session.session_id}:${mi}`]=!collapsed;
-      }
-    }
+    _toggleTransparentTurnCollapsed(turn);
   };
   role.onclick=toggle;
   role.onkeydown=function(ev){
@@ -17970,15 +18056,16 @@ function renderMessages(options){
       const hasTransparentRows=blocks.querySelector(':scope > .transparent-event-row');
       _wireTransparentTurnToggle(turn);
       // Restore collapse state from the map (survives DOM rebuild).
-      const seg=turn.querySelector('.assistant-segment');
-      if(seg&&sid){
-        const mi=seg.getAttribute('data-msg-idx');
-        if(mi!=null&&_transparentTurnCollapsedStates[`${sid}:${mi}`]){
-          turn.setAttribute('data-transparent-turn-collapsed','1');
-          const role=turn.querySelector('.msg-role.assistant');
-          if(role) role.setAttribute('aria-expanded','false');
-        }
+      // Settled turns default collapsed so the final answer is primary
+      // ("Worked for Xm" chip expands chronological thoughts + tools).
+      const collapseKey=_transparentTurnCollapseKey(turn);
+      const savedCollapsed=collapseKey?_transparentTurnCollapsedStates[collapseKey]:undefined;
+      if(hasTransparentRows&&savedCollapsed!==false){
+        _setTransparentTurnCollapsed(turn, true);
+      }else if(savedCollapsed===false){
+        _setTransparentTurnCollapsed(turn, false);
       }
+      _ensureWorkedForChip(turn);
       _applyTransparentRowFading(turn);
       if(hasTransparentRows){
         // Read turn metadata from the final metadata-bearing assistant segment,
@@ -19243,6 +19330,10 @@ function ensureLiveWorklogShell(){
   if(!blocks) return null;
   if(isTransparentStream()){
     _moveLiveRunStatusToTurnEnd();
+    if(turn){
+      _setTransparentTurnCollapsed(turn, false);
+      _ensureWorkedForChip(turn);
+    }
     scrollIfPinned();
     return blocks;
   }

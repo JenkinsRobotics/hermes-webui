@@ -1512,7 +1512,15 @@ async function newSession(flash, options={}){
     S.lastUsage={...(data.session.last_usage||{})};
     if(!(options&&options.worktree)) _rememberNewChatDraftSession(S.session);
     if(flash)S.session._flash=true;
-    try{localStorage.setItem('hermes-webui-session',S.session.session_id);}catch(_){}
+    function _persistActiveSession(sid){
+      if(!sid) return;
+      try{
+        localStorage.setItem('hermes-webui-session', sid);
+        const prof = (typeof S !== 'undefined' && S && S.activeProfile) ? S.activeProfile : 'default';
+        localStorage.setItem('hermes-webui-session:' + prof, sid);
+      }catch(_){}
+    }
+    _persistActiveSession(S.session.session_id);
     _setActiveSessionUrl(S.session.session_id);
     if(typeof startSessionStream==='function') startSessionStream(S.session.session_id);
     _setSessionViewedCount(S.session.session_id, S.session.message_count || 0);
@@ -2062,7 +2070,11 @@ async function loadSession(sid){
     Number(data.session.message_count || 0),
     Number(data.session.last_message_at || data.session.updated_at || 0)
   );
-  try{localStorage.setItem('hermes-webui-session',S.session.session_id);}catch(_){}
+  try{
+    localStorage.setItem('hermes-webui-session',S.session.session_id);
+    const _p = (typeof S !== 'undefined' && S && S.activeProfile) ? S.activeProfile : 'default';
+    localStorage.setItem('hermes-webui-session:' + _p, S.session.session_id);
+  }catch(_){}
   _setActiveSessionUrl(S.session.session_id);
   if(typeof startSessionStream==='function') startSessionStream(S.session.session_id);
 
@@ -7551,6 +7563,15 @@ function _partitionSidebarSessionRows(allMatched, activeSidForSidebar){
   let cliArchivedCount=0;
   for(const s of allMatched){
     if(!_sidebarRowHasVisibleMessages(s, activeSidForSidebar)) continue;
+    if(!_showAllProfiles){
+      const activeProf = String(S.activeProfile || 'default').trim().toLowerCase();
+      const sProf = String(s.profile || '').trim().toLowerCase();
+      const isExternalAgent = s.session_source === 'external_agent' || s.source_tag === 'claude_code' || s.raw_source === 'claude_code';
+      if (isExternalAgent) continue;
+      const isHermes = (p) => p === 'default' || p === 'hermes' || (!p && !isExternalAgent);
+      const matches = (sProf === activeProf) || (isHermes(sProf) && isHermes(activeProf));
+      if (!matches) continue;
+    }
     const isCli=_isCliSession(s);
     if(isCli) cliSessionCount++;
     if(s.default_hidden&&!(_activeProject&&_activeProject!==NO_PROJECT_FILTER&&s.project_id===_activeProject)) continue;

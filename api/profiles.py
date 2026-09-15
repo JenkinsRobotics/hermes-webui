@@ -440,10 +440,9 @@ def _is_root_profile(name: str) -> bool:
 def _profiles_match(row_profile, active_profile) -> bool:
     """Return True if a session/project row's profile matches the active profile.
 
-    Treats both the literal alias 'default' and any renamed-root display name
-    (per _is_root_profile) as equivalent, so legacy rows tagged 'default'
-    still surface when the user has renamed the root profile to e.g. 'kinni',
-    and vice versa.
+    Treats both the literal alias 'default', 'hermes', and any renamed-root
+    display name (per _is_root_profile) as equivalent, so legacy rows tagged
+    'default' or 'hermes' surface when either is active, and vice versa.
 
     A row with no profile (`None` or empty string) is treated as belonging to
     the root profile — that's the convention used by the legacy backfill at
@@ -458,8 +457,11 @@ def _profiles_match(row_profile, active_profile) -> bool:
     active = active_profile or 'default'
     if row == active:
         return True
+    # 'hermes' and 'default' are canonical aliases for the Hermes Agent profile
+    if row in ('default', 'hermes') and active in ('default', 'hermes'):
+        return True
     # Cross-alias the renamed root.
-    if _is_root_profile(row) and _is_root_profile(active):
+    if (_is_root_profile(row) or row == 'hermes') and (_is_root_profile(active) or active == 'hermes'):
         return True
     return False
 

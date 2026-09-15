@@ -7205,9 +7205,23 @@ async function switchToProfile(name) {
     }
 
     // ── Session ────────────────────────────────────────────────────────────
-    // Keep the all-profiles sidebar scope sticky across profile switches. It is
-    // a navigation preference shared by the browser session, not a per-profile flag.
+    // Ensure profile isolation: switching profiles scopes the sidebar strictly
+    // to the active profile's own sessions.
+    if (typeof _setShowAllProfiles === 'function') {
+      _setShowAllProfiles(false);
+    } else if (typeof _showAllProfiles !== 'undefined') {
+      _showAllProfiles = false;
+      try { localStorage.setItem('hermes-show-all-profiles', '0'); } catch (_) {}
+    }
     if (typeof animateNextSessionListRefresh === 'function') animateNextSessionListRefresh();
+
+    const _prevActiveProf = _prevProfileName || 'default';
+    const _targetActiveProf = S.activeProfile || name || 'default';
+    if (S.session && S.session.session_id) {
+      try {
+        localStorage.setItem('hermes-webui-session:' + _prevActiveProf, S.session.session_id);
+      } catch (_) {}
+    }
 
     if (sessionInProgress && _openingExistingSidebarSession) {
       // The caller will immediately load the clicked session after this profile
@@ -7218,51 +7232,33 @@ async function switchToProfile(name) {
       if (_switchGen !== _profileSwitchGeneration) return false;
       if (workspaceVisible && typeof clearWorkspaceTreeSkeleton === 'function') clearWorkspaceTreeSkeleton();
       showToast(t('profile_switched', name));
-    } else if (sessionInProgress) {
-      // The current session has messages and belongs to the previous profile.
-      // Start a new session for the new profile so nothing gets cross-tagged.
+    } else {
       const workspaceVisible = typeof _workspacePanelMode !== 'undefined' && _workspacePanelMode !== 'closed';
-      await newSession(false, {awaitWorkspaceLoad: workspaceVisible, worktree: false});
+      let _savedProfileSid = null;
+      try { _savedProfileSid = localStorage.getItem('hermes-webui-session:' + _targetActiveProf); } catch (_) {}
+      let restoredSavedSession = false;
+      if (_savedProfileSid && typeof loadSession === 'function') {
+        try {
+          await loadSession(_savedProfileSid);
+          restoredSavedSession = !!(S.session && S.session.session_id === _savedProfileSid);
+        } catch (_) {
+          restoredSavedSession = false;
+        }
+      }
+      if (!restoredSavedSession) {
+        await newSession(false, {awaitWorkspaceLoad: workspaceVisible, worktree: false});
+      }
       if (_switchGen !== _profileSwitchGeneration) return false;
-      // Keep topbar chips (workspace/profile) in sync after creating the
-      // new profile-scoped session.
       syncTopbar();
-      // #4671: lift the embargo immediately before the switch-owned render — JS is
-      // single-threaded so nothing interleaves between this clear and the call, making
-      // this render the first allowed to paint the new profile's rows.
       if (typeof _setProfileSwitchListEmbargo === 'function') _setProfileSwitchListEmbargo(false);
       await renderSessionList();
-      // Re-check generation after the awaited list render: a newer switch can be
-      // started while renderSessionList() is in flight, and without this guard
-      // the superseded switch would clear the newer switch's workspace skeleton
-      // and pop a stale toast. Mirrors the no-messages branch guard below.
-      // (@rodboev/greptile review, #4662)
       if (_switchGen !== _profileSwitchGeneration) return false;
       if (typeof _openProfileSwitchSessionBrowser === 'function') _openProfileSwitchSessionBrowser();
-      // Safety net: if the new session has no workspace, newSession() won't have
-      // painted the file tree — clear the up-front skeleton so it can't strand
-      // (#4662 Opus gate). No-op when a real tree already rendered.
       if ((!S.session || !S.session.workspace) && typeof clearWorkspaceTreeSkeleton === 'function') {
         clearWorkspaceTreeSkeleton();
       }
-      showToast(t('profile_switched_new_conversation', name));
-    } else {
-      // No messages yet — refresh the list and topbar in place, then the
-      // workspace tree. The loading skeletons shown up front (top of this
-      // function) already give immediate cross-surface feedback, so we keep the
-      // workspace refresh AFTER the stale-switch guard: loadDir() paints the
-      // file tree as soon as its fetch resolves with only a session-id check,
-      // and empty-session switches reuse the same session id — so starting it
-      // before the guard could let an older switch's /api/list paint over a
-      // newer one (Codex gate #4662). renderSessionList() is the slow fetch and
-      // has its own internal generation guard, so awaiting it first is fine.
-      const workspaceVisible = typeof _workspacePanelMode !== 'undefined' && _workspacePanelMode !== 'closed';
-      // #4671: lift the embargo immediately before the switch-owned render (see above).
-      if (typeof _setProfileSwitchListEmbargo === 'function') _setProfileSwitchListEmbargo(false);
-      await renderSessionList();
-      if (_switchGen !== _profileSwitchGeneration) return;
-      if (typeof _openProfileSwitchSessionBrowser === 'function') _openProfileSwitchSessionBrowser();
-      syncTopbar();
+      showToast(restoredSavedSession ? t('profile_switched', name) : t('profile_switched_new_conversation', name));
+    }
       // Refresh workspace file tree so the right panel shows the new
       // profile's workspace, not the previous one (#1214).
       if (S.session && S.session.workspace) {

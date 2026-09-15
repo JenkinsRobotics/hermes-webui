@@ -2488,7 +2488,11 @@ def _build_session_list_cache_payload(
         scoped = merged
         other_profile_count = 0
     else:
-        scoped = [s for s in merged if _profiles_match(s.get("profile"), active_profile)]
+        scoped = [
+            s for s in merged
+            if _profiles_match(s.get("profile"), active_profile)
+            and not _is_profile_agnostic_foreign_session(s)
+        ]
         other_profile_count = 0 if _is_isolated_profile_mode() else len(merged) - len(scoped)
     diag_stage("messaging_dedupe")
     archived_scoped = _keep_latest_messaging_session_per_source(

@@ -3764,7 +3764,8 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
       if(localStorage.getItem('hermes-webui-session')===_savedLocalBeforeProfileSwitch) localStorage.removeItem('hermes-webui-session');
     }catch(_){}
   }
-  const savedLocal=localStorage.getItem('hermes-webui-session');
+  const _bootProf=S.activeProfile||'default';
+  const savedLocal=localStorage.getItem('hermes-webui-session:'+_bootProf)||localStorage.getItem('hermes-webui-session');
   const saved=urlSession||savedLocal;
   if(saved){
     try{
