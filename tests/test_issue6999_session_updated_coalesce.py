@@ -246,3 +246,32 @@ console.log(JSON.stringify({{afterHeld, full: record}}));
         ["latch", "s1", 9],
         ["load", "s1", {"force": True, "externalRefreshReason": "session-updated", "keepStaleUntilLoaded": True}],
     ], out["full"]
+
+
+def test_messages_handler_does_not_reload_during_optimistic_send():
+    """A session update must not destroy the local turn before chat/start returns.
+
+    ``send()`` sets ``S.busy`` before awaiting ``/api/chat/start`` but cannot set
+    ``S.activeStreamId`` until that request returns.  A session-updated frame in
+    that window used to force ``loadSession()``, whose idle metadata path clears
+    the optimistic user bubble and disconnects the live renderer.
+    """
+    start = MESSAGES_JS.index("es.addEventListener('session-updated', e => {")
+    end = MESSAGES_JS.index("\n    });", start)
+    body = MESSAGES_JS[start + len("es.addEventListener('session-updated', e => {") : end]
+    script = f"""
+const record = [];
+const sid = 's1';
+const S = {{session: {{session_id: 's1', message_count: 0}}, messages: [{{role: 'user', content: 'hello', _pending: true}}], busy: true, activeStreamId: null}};
+const _coalesceSessionUpdatedWhileRefreshHeld = () => false;
+const _isSessionCurrentPane = () => true;
+const loadSession = (sid, opts) => record.push(['load', sid, opts]);
+global.S = S;
+const handler = (e) => {{
+{body}
+}};
+handler({{data: JSON.stringify({{session_id: 's1', message_count: 1}})}});
+console.log(JSON.stringify({{record}}));
+"""
+    out = _run_node(script)
+    assert out["record"] == [], "session-updated must defer to the active send renderer"

@@ -8254,7 +8254,13 @@ function startSessionStream(sid) {
           ? _isSessionCurrentPane(sid)
           : (S.session && S.session.session_id === sid);
         if (!isCurrent) return;
-        if (S.activeStreamId) return;
+        // `send()` marks the pane busy before awaiting /api/chat/start, but the
+        // stream id does not exist until that request returns.  A session update
+        // in that gap belongs to the optimistic send renderer.  Force-reloading
+        // here makes loadSession() observe a briefly idle server snapshot, clear
+        // the just-sent user bubble, and tear down the stream that is about to be
+        // attached.  The persisted answer then appears only after a page refresh.
+        if (S.busy || S.activeStreamId) return;
         const serverCount = Number(d.message_count);
         if (typeof _coalesceSessionUpdatedWhileRefreshHeld === 'function' && _coalesceSessionUpdatedWhileRefreshHeld(sid, serverCount)) return;
         // Re-check against our CURRENT known count — a concurrent load may have
